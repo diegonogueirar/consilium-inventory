@@ -567,7 +567,7 @@ with abas[5]:
 
 if st.session_state.perfil_atual == "ADMIN":
     with abas[6]:
-        st.subheader("Administrator Panel - User Management")
+        st.subheader("Administrator Panel - User & Inventory Management")
         c_adm = conn.cursor()
         c_adm.execute("SELECT id, username, nome_completo, email, perfil, status, data_cadastro, pedido_reset FROM usuarios ORDER BY status DESC, pedido_reset DESC, id ASC")
         users_rows = c_adm.fetchall()
@@ -601,6 +601,25 @@ if st.session_state.perfil_atual == "ADMIN":
                             st.success(f"Password reset for {u_row[1]}!")
                             st.rerun()
                             
+        st.markdown("---")
+        st.markdown("### Edit Part Warehouse (Transfer Location)")
+        df_pecas_adm = pd.read_sql_query("SELECT id, spare_part, part_number, estoque_origem, system FROM estoque", conn)
+        if df_pecas_adm.empty:
+            st.info("No parts available to edit.")
+        else:
+            with st.form("form_mudar_warehouse"):
+                opcoes_wh = {f"[{r['estoque_origem']}] {r['spare_part']} (P/N: {r['part_number'] or 'N/A'}) - Sys: {r['system']}": r['id'] for _, r in df_pecas_adm.iterrows()}
+                peca_sel_wh = st.selectbox("Select Part to Transfer", list(opcoes_wh.keys()))
+                novo_wh_escolhido = st.selectbox("New Warehouse", ["Santa Catarina", "Duci", "Diego"])
+                
+                btn_salvar_wh = st.form_submit_button("Update Part Warehouse", use_container_width=True)
+                if btn_salvar_wh:
+                    id_peca_wh = opcoes_wh[peca_sel_wh]
+                    c_adm.execute("UPDATE estoque SET estoque_origem = ? WHERE id = ?", (novo_wh_escolhido, int(id_peca_wh)))
+                    conn.commit()
+                    st.success(f"Warehouse successfully updated to '{novo_wh_escolhido}'!")
+                    st.rerun()
+
         st.markdown("---")
         st.markdown("### All Registered Users & Management")
         
