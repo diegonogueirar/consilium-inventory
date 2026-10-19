@@ -191,8 +191,6 @@ def iniciar_banco():
     conn.commit()
     return conn
 
-conn = iniciar_banco()
-
 def limpar_dado(valor):
     if pd.isna(valor) or valor is None:
         return ""
@@ -364,7 +362,7 @@ k4.metric("Vessel Dispatches", len(df_hist_total))
 
 st.write("")
 
-lista_abas = ["Checkout Parts", "Check Inventory", "Register Part", "Add/Restock Parts", "Usage History", "My Profile"]
+lista_abas = ["Checkout Parts", "Check Inventory", "Register Part", "Add/Restock Parts", "Service Checkouts", "Full History", "My Profile"]
 if st.session_state.perfil_atual == "ADMIN":
     lista_abas.append("Admin Panel")
 
@@ -436,7 +434,6 @@ with abas[1]:
     if st.session_state.perfil_atual == "ADMIN":
         st.markdown("💡 **Admin Mode:** Edit values directly in the table below. Click the 'Warehouse' cell to see the dropdown.")
         
-        # Cria a tabela interativa onde as colunas são editáveis
         edited_df = st.data_editor(
             df_estoque,
             use_container_width=True,
@@ -450,12 +447,10 @@ with abas[1]:
             }
         )
         
-        # Compara a tabela editada com a tabela original para achar mudanças
         mudancas = []
         for i in range(len(df_estoque)):
             row_orig = df_estoque.iloc[i]
             row_edit = edited_df.iloc[i]
-            # O Pandas verifica se as duas linhas são iguais
             if not row_orig.equals(row_edit):
                 mudancas.append((row_orig, row_edit))
         
@@ -492,7 +487,6 @@ with abas[1]:
                         st.success("All changes saved successfully!")
                         st.rerun()
     else:
-        # Se for Técnico, mostra a tabela normal sem opção de editar
         st.dataframe(df_estoque, use_container_width=True, hide_index=True)
 
 with abas[2]:
@@ -571,8 +565,26 @@ with abas[3]:
                     st.rerun()
 
 with abas[4]:
-    st.subheader("Usage History")
-    busca_hist = st.text_input("Filter history by vessel, WO, technician, part, P/N, warehouse or system...")
+    st.subheader("Service Checkouts (Usage on Vessel)")
+    busca_out = st.text_input("Filter checkouts by vessel, WO, technician, part, P/N, warehouse or system...", key="search_out")
+    df_out = pd.read_sql_query("SELECT data_hora AS 'Date/Time', usuario AS 'Technician', estoque_origem AS 'Warehouse', spare_part AS 'Spare Part', part_number AS 'Part Number', numero_serie AS 'Serial Number', quantidade AS 'Qty', system AS 'System', navio AS 'Vessel', work_order AS 'Work Order' FROM historico WHERE tipo_movimento = 'OUT (SERVICE)' ORDER BY id DESC", conn)
+    if busca_out:
+        bo_lower = busca_out.lower()
+        f_out = (
+            df_out['Vessel'].str.lower().str.contains(bo_lower, na=False) |
+            df_out['Work Order'].str.lower().str.contains(bo_lower, na=False) |
+            df_out['Technician'].str.lower().str.contains(bo_lower, na=False) |
+            df_out['Warehouse'].str.lower().str.contains(bo_lower, na=False) |
+            df_out['Spare Part'].str.lower().str.contains(bo_lower, na=False) |
+            df_out['Part Number'].str.lower().str.contains(bo_lower, na=False) |
+            df_out['System'].str.lower().str.contains(bo_lower, na=False)
+        )
+        df_out = df_out[f_out]
+    st.dataframe(df_out, use_container_width=True, hide_index=True)
+
+with abas[5]:
+    st.subheader("Full Usage History")
+    busca_hist = st.text_input("Filter full history by vessel, WO, technician, part, P/N, warehouse or system...", key="search_full")
     df_hist = pd.read_sql_query("SELECT data_hora AS 'Date/Time', usuario AS 'Technician', tipo_movimento AS 'Movement', estoque_origem AS 'Warehouse', spare_part AS 'Spare Part', part_number AS 'Part Number', numero_serie AS 'Serial Number', quantidade AS 'Qty', system AS 'System', navio AS 'Vessel', work_order AS 'Work Order' FROM historico ORDER BY id DESC", conn)
     if busca_hist:
         bh_lower = busca_hist.lower()
@@ -588,7 +600,7 @@ with abas[4]:
         df_hist = df_hist[f_hist]
     st.dataframe(df_hist, use_container_width=True, hide_index=True)
 
-with abas[5]:
+with abas[6]:
     st.subheader("Account Settings")
     c = conn.cursor()
     c.execute("SELECT nome_completo, email FROM usuarios WHERE username = ?", (st.session_state.usuario_atual,))
@@ -632,7 +644,7 @@ with abas[5]:
                     st.success("Password changed successfully!")
 
 if st.session_state.perfil_atual == "ADMIN":
-    with abas[6]:
+    with abas[7]:
         st.subheader("Administrator Panel - User Management")
         c_adm = conn.cursor()
         c_adm.execute("SELECT id, username, nome_completo, email, perfil, status, data_cadastro, pedido_reset FROM usuarios ORDER BY status DESC, pedido_reset DESC, id ASC")
