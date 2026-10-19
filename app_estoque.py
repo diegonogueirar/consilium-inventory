@@ -136,7 +136,6 @@ def iniciar_banco():
                     system TEXT NOT NULL
                 )''')
     
-    # Garantia de colunas caso o banco antigo já exista
     colunas_estoque = [col[1] for col in c.execute("PRAGMA table_info(estoque)").fetchall()]
     if 'part_number' not in colunas_estoque:
         c.execute("ALTER TABLE estoque ADD COLUMN part_number TEXT")
@@ -364,7 +363,7 @@ k4.metric("Vessel Dispatches", len(df_hist_total))
 
 st.write("")
 
-lista_abas = ["Checkout Parts", "Check Inventory", "Register Part", "Usage History", "My Profile"]
+lista_abas = ["Checkout Parts", "Check Inventory", "Register Part", "Add/Restock Parts", "Usage History", "My Profile"]
 if st.session_state.perfil_atual == "ADMIN":
     lista_abas.append("Admin Panel")
 
@@ -465,6 +464,47 @@ with abas[2]:
                     st.rerun()
 
 with abas[3]:
+    st.subheader("Add / Restock Existing Parts")
+    if st.session_state.perfil_atual != "ADMIN":
+        st.error("🚫 Access Denied: Only Administrators can restock inventory.")
+    else:
+        df_todas_pecas = pd.read_sql_query("SELECT * FROM estoque", conn)
+        if df_todas_pecas.empty:
+            st.info("No parts registered in inventory yet.")
+        else:
+            opcoes_reposicao = {}
+            for _, row in df_todas_pecas.iterrows():
+                pn_text = f" | P/N: {row['part_number']}" if row['part_number'] else ""
+                sn_text = f" | S/N: {row['numero_serie']}" if row['numero_serie'] else ""
+                label = f"[{row['estoque_origem']}] {row['spare_part']}{pn_text}{sn_text} | Sys: {row['system']} (Current: {row['quantidade']})"
+                opcoes_reposicao[label] = row['id']
+            
+            with st.form("form_reposicao"):
+                peca_rep_label = st.selectbox("Select Part to Restock", list(opcoes_reposicao.keys()))
+                col_rq, col_rm = st.columns([1, 2])
+                with col_rq:
+                    qtd_adicional = st.number_input("Quantity to Add *", min_value=1, step=1, value=1)
+                with col_rm:
+                    motivo_reposicao = st.text_input("Reason / Invoice (Optional)", placeholder="Ex: Invoice #9982 or New Stock Arrival")
+                
+                btn_repor = st.form_submit_button("Add Stock Quantity", use_container_width=True)
+                if btn_repor:
+                    id_rep = opcoes_reposicao[peca_rep_label]
+                    dados_rep = df_todas_pecas[df_todas_pecas['id'] == id_rep].iloc[0]
+                    nova_qtd_total = int(dados_rep['quantidade'] + qtd_adicional)
+                    
+                    c = conn.cursor()
+                    c.execute("UPDATE estoque SET quantidade = ? WHERE id = ?", (nova_qtd_total, int(id_rep)))
+                    agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+                    obs_mov = motivo_reposicao.strip() if motivo_reposicao.strip() else "Restock / Stock Addition"
+                    
+                    sql_hist_restock = "INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    c.execute(sql_hist_restock, (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "IN (RESTOCK)", dados_rep['spare_part'], dados_rep.get('part_number', ''), dados_rep.get('numero_serie', ''), int(qtd_adicional), dados_rep.get('estoque_origem', ''), dados_rep.get('system', ''), "-", obs_mov))
+                    conn.commit()
+                    st.success(f"Successfully added {qtd_adicional} unit(s) to '{dados_rep['spare_part']}'. New total: {nova_qtd_total}")
+                    st.rerun()
+
+with abas[4]:
     st.subheader("Usage History")
     busca_hist = st.text_input("Filter history by vessel, WO, technician, part, P/N, warehouse or system...")
     df_hist = pd.read_sql_query("SELECT data_hora AS 'Date/Time', usuario AS 'Technician', tipo_movimento AS 'Movement', estoque_origem AS 'Warehouse', spare_part AS 'Spare Part', part_number AS 'Part Number', numero_serie AS 'Serial Number', quantidade AS 'Qty', system AS 'System', navio AS 'Vessel', work_order AS 'Work Order' FROM historico ORDER BY id DESC", conn)
@@ -482,7 +522,7 @@ with abas[3]:
         df_hist = df_hist[f_hist]
     st.dataframe(df_hist, use_container_width=True, hide_index=True)
 
-with abas[4]:
+with abas[5]:
     st.subheader("Account Settings")
     c = conn.cursor()
     c.execute("SELECT nome_completo, email FROM usuarios WHERE username = ?", (st.session_state.usuario_atual,))
@@ -526,7 +566,7 @@ with abas[4]:
                     st.success("Password changed successfully!")
 
 if st.session_state.perfil_atual == "ADMIN":
-    with abas[5]:
+    with abas[6]:
         st.subheader("Administrator Panel - User Management")
         c_adm = conn.cursor()
         c_adm.execute("SELECT id, username, nome_completo, email, perfil, status, data_cadastro, pedido_reset FROM usuarios ORDER BY status DESC, pedido_reset DESC, id ASC")
