@@ -127,7 +127,6 @@ def iniciar_banco():
     conn = sqlite3.connect("estoque_empresa.db", check_same_thread=False)
     c = conn.cursor()
     
-    # Mantém a estrutura original base para não quebrar bancos antigos
     c.execute('''CREATE TABLE IF NOT EXISTS estoque (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     spare_part TEXT NOT NULL,
@@ -193,6 +192,11 @@ def iniciar_banco():
     return conn
 
 conn = iniciar_banco()
+
+def limpar_dado(valor):
+    if pd.isna(valor) or valor is None:
+        return ""
+    return str(valor).strip()
 
 def enviar_email_recuperacao(email_destino, nome_usuario, nova_senha):
     c = conn.cursor()
@@ -428,67 +432,68 @@ with abas[1]:
             df_estoque['System'].str.lower().str.contains(busca_lower, na=False)
         )
         df_estoque = df_estoque[filtro]
-    st.dataframe(df_estoque, use_container_width=True, hide_index=True)
-
-    # Nova seção exclusiva para Administradores editarem peças
+    
     if st.session_state.perfil_atual == "ADMIN":
-        st.markdown("---")
-        st.subheader("✏️ Edit Part Information (Admin Only)")
+        st.markdown("💡 **Admin Mode:** Edit values directly in the table below. Click the 'Warehouse' cell to see the dropdown.")
         
-        df_todas_pecas_edit = pd.read_sql_query("SELECT * FROM estoque", conn)
-        if not df_todas_pecas_edit.empty:
-            opcoes_edit = {}
-            for _, row in df_todas_pecas_edit.iterrows():
-                pn_text = f" | P/N: {row['part_number']}" if row['part_number'] else ""
-                sn_text = f" | S/N: {row['numero_serie']}" if row['numero_serie'] else ""
-                label = f"[{row['estoque_origem']}] {row['spare_part']}{pn_text}{sn_text} | Sys: {row['system']} (Qty: {row['quantidade']})"
-                opcoes_edit[label] = row['id']
-            
-            peca_edit_label = st.selectbox("Select Part to Edit", list(opcoes_edit.keys()))
-            id_edit = opcoes_edit[peca_edit_label]
-            dados_atuais = df_todas_pecas_edit[df_todas_pecas_edit['id'] == id_edit].iloc[0]
-            
-            with st.form("form_editar_peca"):
-                col_e1, col_e2 = st.columns(2)
-                with col_e1:
-                    wh_options = ["Santa Catarina", "Duci", "Diego"]
-                    current_wh = dados_atuais['estoque_origem']
-                    wh_index = wh_options.index(current_wh) if current_wh in wh_options else 0
-                    
-                    edit_wh = st.selectbox("Warehouse *", wh_options, index=wh_index)
-                    edit_spare = st.text_input("Spare Part Name *", value=dados_atuais['spare_part'])
-                    edit_pn = st.text_input("Part Number (P/N)", value=dados_atuais['part_number'] if dados_atuais['part_number'] else "")
-                with col_e2:
-                    edit_sn = st.text_input("Serial Number (S/N)", value=dados_atuais['numero_serie'] if dados_atuais['numero_serie'] else "")
-                    edit_qtd = st.number_input("Quantity *", min_value=0, step=1, value=int(dados_atuais['quantidade']))
-                    edit_system = st.text_input("System *", value=dados_atuais['system'])
+        # Cria a tabela interativa onde as colunas são editáveis
+        edited_df = st.data_editor(
+            df_estoque,
+            use_container_width=True,
+            hide_index=True,
+            disabled=["ID"],
+            column_config={
+                "Warehouse": st.column_config.SelectboxColumn("Warehouse", options=["Santa Catarina", "Duci", "Diego"], required=True),
+                "Current Qty": st.column_config.NumberColumn("Current Qty", min_value=0, step=1, required=True),
+                "Spare Part": st.column_config.TextColumn("Spare Part", required=True),
+                "System": st.column_config.TextColumn("System", required=True)
+            }
+        )
+        
+        # Compara a tabela editada com a tabela original para achar mudanças
+        mudancas = []
+        for i in range(len(df_estoque)):
+            row_orig = df_estoque.iloc[i]
+            row_edit = edited_df.iloc[i]
+            # O Pandas verifica se as duas linhas são iguais
+            if not row_orig.equals(row_edit):
+                mudancas.append((row_orig, row_edit))
+        
+        if mudancas:
+            st.warning(f"⚠️ You have {len(mudancas)} unsaved change(s) in the table above.")
+            with st.form("form_save_inline_edits"):
+                motivo_inline = st.text_input("Reason for edits (Required for Log) *", placeholder="Ex: Audit correction, P/N updated, transferred warehouse...")
+                btn_save_inline = st.form_submit_button("💾 Save All Edits", use_container_width=True)
                 
-                motivo_edicao = st.text_input("Reason for Edit (Required for Log) *", placeholder="Ex: Corrected P/N or Transferred to Duci Warehouse")
-                
-                btn_salvar_edicao = st.form_submit_button("Save Changes", use_container_width=True)
-                if btn_salvar_edicao:
-                    if not edit_spare.strip() or not edit_system.strip() or not motivo_edicao.strip():
-                        st.error("Spare Part Name, System, and Reason for Edit are required.")
+                if btn_save_inline:
+                    if not motivo_inline.strip():
+                        st.error("Reason is required to save changes.")
                     else:
                         c = conn.cursor()
-                        val_pn = edit_pn.strip() if edit_pn else ""
-                        val_sn = edit_sn.strip() if edit_sn else ""
-                        val_sys = edit_system.strip()
-                        
-                        # Atualiza as colunas novas e a antiga localizacao para evitar erros no DB na nuvem
-                        c.execute("UPDATE estoque SET spare_part=?, part_number=?, numero_serie=?, quantidade=?, estoque_origem=?, system=?, localizacao=? WHERE id=?",
-                                  (edit_spare.strip(), val_pn, val_sn, int(edit_qtd), edit_wh, val_sys, val_sys, int(id_edit)))
-                        
                         agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-                        obs_mov = f"EDIT: {motivo_edicao.strip()}"
                         
-                        # Registra no histórico
-                        sql_hist_edit = "INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                        c.execute(sql_hist_edit, (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "EDIT (ADMIN)", edit_spare.strip(), val_pn, val_sn, int(edit_qtd), edit_wh, val_sys, "-", obs_mov))
+                        for orig, edit in mudancas:
+                            id_peca = int(edit['ID'])
+                            val_sp = limpar_dado(edit['Spare Part'])
+                            val_pn = limpar_dado(edit['Part Number'])
+                            val_sn = limpar_dado(edit['Serial Number'])
+                            val_wh = limpar_dado(edit['Warehouse'])
+                            val_sys = limpar_dado(edit['System'])
+                            val_qtd = int(edit['Current Qty'])
+                            
+                            c.execute("UPDATE estoque SET spare_part=?, part_number=?, numero_serie=?, quantidade=?, estoque_origem=?, system=?, localizacao=? WHERE id=?",
+                                      (val_sp, val_pn, val_sn, val_qtd, val_wh, val_sys, val_sys, id_peca))
+                            
+                            obs_mov = f"INLINE EDIT: {motivo_inline.strip()}"
+                            sql_hist_edit = "INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                            c.execute(sql_hist_edit, (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "EDIT (ADMIN)", val_sp, val_pn, val_sn, val_qtd, val_wh, val_sys, "-", obs_mov))
                         
                         conn.commit()
-                        st.success("Part updated successfully!")
+                        st.success("All changes saved successfully!")
                         st.rerun()
+    else:
+        # Se for Técnico, mostra a tabela normal sem opção de editar
+        st.dataframe(df_estoque, use_container_width=True, hide_index=True)
 
 with abas[2]:
     st.subheader("Register New Item to Inventory")
