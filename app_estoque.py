@@ -129,21 +129,38 @@ def iniciar_banco():
     c.execute('''CREATE TABLE IF NOT EXISTS estoque (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     spare_part TEXT NOT NULL,
+                    part_number TEXT,
                     numero_serie TEXT,
                     quantidade INTEGER NOT NULL,
-                    localizacao TEXT NOT NULL
+                    estoque_origem TEXT NOT NULL,
+                    system TEXT NOT NULL
                 )''')
+    
+    try:
+        c.execute("ALTER TABLE estoque ADD COLUMN system TEXT DEFAULT 'General'")
+    except:
+        pass
+
     c.execute('''CREATE TABLE IF NOT EXISTS historico (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     data_hora TEXT NOT NULL,
                     usuario TEXT NOT NULL,
                     tipo_movimento TEXT NOT NULL,
                     spare_part TEXT NOT NULL,
+                    part_number TEXT,
                     numero_serie TEXT,
                     quantidade INTEGER NOT NULL,
+                    estoque_origem TEXT,
+                    system TEXT,
                     navio TEXT,
                     work_order TEXT
                 )''')
+    
+    try:
+        c.execute("ALTER TABLE historico ADD COLUMN system TEXT")
+    except:
+        pass
+
     c.execute('''CREATE TABLE IF NOT EXISTS usuarios (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT UNIQUE NOT NULL,
@@ -164,8 +181,6 @@ def iniciar_banco():
                 )''')
     
     agora = datetime.now().strftime("%d/%m/%Y %H:%M")
-    
-    # Cria apenas a conta master 'admin' caso o banco esteja totalmente vazio de administradores
     c.execute("SELECT COUNT(*) FROM usuarios WHERE perfil = 'ADMIN'")
     if c.fetchone()[0] == 0:
         c.execute("INSERT OR IGNORE INTO usuarios (username, nome_completo, email, senha_hash, perfil, status, data_cadastro) VALUES (?, ?, ?, ?, 'ADMIN', 'APROVADO', ?)",
@@ -356,8 +371,9 @@ with abas[0]:
     else:
         opcoes_pecas = {}
         for _, row in df_disponivel.iterrows():
-            sn_texto = f"S/N: {row['numero_serie']}" if row['numero_serie'] else "No S/N (Batch)"
-            label = f"{row['spare_part']} | {sn_texto} | Location: {row['localizacao']} (Avail: {row['quantidade']})"
+            pn_text = f" | P/N: {row['part_number']}" if row['part_number'] else ""
+            sn_texto = f" | S/N: {row['numero_serie']}" if row['numero_serie'] else ""
+            label = f"[{row['estoque_origem']}] {row['spare_part']}{pn_text}{sn_texto} | Sys: {row['system']} (Avail: {row['quantidade']})"
             opcoes_pecas[label] = row['id']
         
         with st.form("form_baixa_servico"):
@@ -383,60 +399,73 @@ with abas[0]:
                     c = conn.cursor()
                     c.execute("UPDATE estoque SET quantidade = ? WHERE id = ?", (nova_qtd, int(id_peca)))
                     agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-                    sql_hist = "INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, numero_serie, quantidade, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-                    c.execute(sql_hist, (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "OUT (SERVICE)", dados_peca['spare_part'], dados_peca['numero_serie'], int(qtd_retirada), navio.strip(), work_order.strip()))
+                    sql_hist = "INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    c.execute(sql_hist, (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "OUT (SERVICE)", dados_peca['spare_part'], dados_peca['part_number'], dados_peca['numero_serie'], int(qtd_retirada), dados_peca['estoque_origem'], dados_peca['system'], navio.strip(), work_order.strip()))
                     conn.commit()
                     st.success(f"Checkout successfully recorded for vessel {navio}!")
                     st.rerun()
 
 with abas[1]:
     st.subheader("Inventory Lookup")
-    busca = st.text_input("Search by part, serial number or location...")
-    df_estoque = pd.read_sql_query("SELECT id AS 'ID', spare_part AS 'Spare Part', numero_serie AS 'Serial Number', quantidade AS 'Current Qty', localizacao AS 'Location' FROM estoque", conn)
+    busca = st.text_input("Search (Partial characters allowed, e.g., part name, P/N, S/N, warehouse or system)...")
+    df_estoque = pd.read_sql_query("SELECT id AS 'ID', estoque_origem AS 'Warehouse', spare_part AS 'Spare Part', part_number AS 'Part Number', numero_serie AS 'Serial Number', quantidade AS 'Current Qty', system AS 'System' FROM estoque", conn)
     if busca:
+        busca_lower = busca.lower()
         filtro = (
-            df_estoque['Spare Part'].str.contains(busca, case=False, na=False) |
-            df_estoque['Serial Number'].str.contains(busca, case=False, na=False) |
-            df_estoque['Location'].str.contains(busca, case=False, na=False)
+            df_estoque['Warehouse'].str.lower().str.contains(busca_lower, na=False) |
+            df_estoque['Spare Part'].str.lower().str.contains(busca_lower, na=False) |
+            df_estoque['Part Number'].str.lower().str.contains(busca_lower, na=False) |
+            df_estoque['Serial Number'].str.lower().str.contains(busca_lower, na=False) |
+            df_estoque['System'].str.lower().str.contains(busca_lower, na=False)
         )
         df_estoque = df_estoque[filtro]
     st.dataframe(df_estoque, use_container_width=True, hide_index=True)
 
 with abas[2]:
     st.subheader("Register New Item to Inventory")
-    with st.form("form_cadastro", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        with col1:
-            novo_spare = st.text_input("Spare Part Name / Code *", placeholder="Ex: Central Board")
-            novo_sn = st.text_input("Serial Number (S/N)", placeholder="Optional")
-        with col2:
-            nova_qtd = st.number_input("Initial Quantity *", min_value=1, step=1, value=1)
-            novo_local = st.text_input("Location *", placeholder="Ex: Cabinet A")
-        btn_cadastrar = st.form_submit_button("Save to Inventory", use_container_width=True)
-        if btn_cadastrar:
-            if not novo_spare.strip() or not novo_local.strip():
-                st.error("Spare Part and Location are required.")
-            else:
-                c = conn.cursor()
-                c.execute("INSERT INTO estoque (spare_part, numero_serie, quantidade, localizacao) VALUES (?, ?, ?, ?)",
-                          (novo_spare.strip(), novo_sn.strip(), int(nova_qtd), novo_local.strip()))
-                agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-                sql_hist_in = "INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, numero_serie, quantidade, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-                c.execute(sql_hist_in, (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "IN (REGISTRATION)", novo_spare.strip(), novo_sn.strip(), int(nova_qtd), "-", "-"))
-                conn.commit()
-                st.success("Part registered successfully!")
-                st.rerun()
+    if st.session_state.perfil_atual != "ADMIN":
+        st.error("🚫 Access Denied: Only Administrators can register new parts into inventory.")
+    else:
+        with st.form("form_cadastro", clear_on_submit=True):
+            col1, col2 = st.columns(2)
+            with col1:
+                estoque_escolhido = st.selectbox("Select Warehouse *", ["Santa Catarina", "Duci", "Diego"])
+                novo_spare = st.text_input("Spare Part Name *", placeholder="Ex: Central Board")
+                novo_pn = st.text_input("Part Number (P/N)", placeholder="Ex: PN-55402")
+            with col2:
+                novo_sn = st.text_input("Serial Number (S/N)", placeholder="Optional (leave blank if batch)")
+                nova_qtd = st.number_input("Initial Quantity *", min_value=1, step=1, value=1)
+                novo_system = st.text_input("System *", placeholder="Ex: Fire Alarm SW2020")
+            
+            btn_cadastrar = st.form_submit_button("Save to Inventory", use_container_width=True)
+            if btn_cadastrar:
+                if not novo_spare.strip() or not novo_system.strip():
+                    st.error("Spare Part Name and System are required.")
+                else:
+                    c = conn.cursor()
+                    c.execute("INSERT INTO estoque (spare_part, part_number, numero_serie, quantidade, estoque_origem, system) VALUES (?, ?, ?, ?, ?, ?)",
+                              (novo_spare.strip(), novo_pn.strip(), novo_sn.strip(), int(nova_qtd), estoque_escolhido, novo_system.strip()))
+                    agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+                    sql_hist_in = "INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    c.execute(sql_hist_in, (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "IN (REGISTRATION)", novo_spare.strip(), novo_pn.strip(), novo_sn.strip(), int(nova_qtd), estoque_escolhido, novo_system.strip(), "-", "-"))
+                    conn.commit()
+                    st.success(f"Part registered successfully in warehouse '{estoque_escolhido}'!")
+                    st.rerun()
 
 with abas[3]:
     st.subheader("Usage History")
-    busca_hist = st.text_input("Filter history by vessel, WO, technician or part...")
-    df_hist = pd.read_sql_query("SELECT data_hora AS 'Date/Time', usuario AS 'Technician', tipo_movimento AS 'Movement', spare_part AS 'Spare Part', numero_serie AS 'Serial Number', quantidade AS 'Qty', navio AS 'Vessel', work_order AS 'Work Order' FROM historico ORDER BY id DESC", conn)
+    busca_hist = st.text_input("Filter history by vessel, WO, technician, part, P/N, warehouse or system...")
+    df_hist = pd.read_sql_query("SELECT data_hora AS 'Date/Time', usuario AS 'Technician', tipo_movimento AS 'Movement', estoque_origem AS 'Warehouse', spare_part AS 'Spare Part', part_number AS 'Part Number', numero_serie AS 'Serial Number', quantidade AS 'Qty', system AS 'System', navio AS 'Vessel', work_order AS 'Work Order' FROM historico ORDER BY id DESC", conn)
     if busca_hist:
+        bh_lower = busca_hist.lower()
         f_hist = (
-            df_hist['Vessel'].str.contains(busca_hist, case=False, na=False) |
-            df_hist['Work Order'].str.contains(busca_hist, case=False, na=False) |
-            df_hist['Technician'].str.contains(busca_hist, case=False, na=False) |
-            df_hist['Spare Part'].str.contains(busca_hist, case=False, na=False)
+            df_hist['Vessel'].str.lower().str.contains(bh_lower, na=False) |
+            df_hist['Work Order'].str.lower().str.contains(bh_lower, na=False) |
+            df_hist['Technician'].str.lower().str.contains(bh_lower, na=False) |
+            df_hist['Warehouse'].str.lower().str.contains(bh_lower, na=False) |
+            df_hist['Spare Part'].str.lower().str.contains(bh_lower, na=False) |
+            df_hist['Part Number'].str.lower().str.contains(bh_lower, na=False) |
+            df_hist['System'].str.lower().str.contains(bh_lower, na=False)
         )
         df_hist = df_hist[f_hist]
     st.dataframe(df_hist, use_container_width=True, hide_index=True)
@@ -554,7 +583,6 @@ if st.session_state.perfil_atual == "ADMIN":
         with col_rem:
             st.markdown("#### Remove User Account")
             with st.form("form_remover_usuario"):
-                # Lista apenas usuários cujo username NÃO seja 'admin' (protege somente a conta admin)
                 opcoes_rem = {f"{r[2]} ({r[1]})": r[0] for r in users_rows if r[1].lower() != 'admin'}
                 
                 if not opcoes_rem:
