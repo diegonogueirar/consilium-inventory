@@ -30,6 +30,9 @@ def aplicar_estilo_consilium():
         with open("logo.png", "rb") as f:
             data = base64.b64encode(f.read()).decode("utf-8")
         bg_image_css = f"""
+        .stApp {{
+            background-color: #0e1117 !important;
+        }}
         .stApp::before {{
             content: "";
             position: fixed;
@@ -37,11 +40,10 @@ def aplicar_estilo_consilium():
             left: 0;
             width: 100vw;
             height: 100vh;
-            background-image: url("data:image/png;base64,{data}");
+            background-image: linear-gradient(rgba(14, 17, 23, 0.85), rgba(14, 17, 23, 0.95)), url("data:image/png;base64,{data}");
             background-repeat: no-repeat;
             background-position: center;
-            background-size: 75vw auto;
-            opacity: 0.045;
+            background-size: cover;
             pointer-events: none;
             z-index: 0;
         }}
@@ -419,7 +421,6 @@ with abas[0]:
 
 with abas[1]:
     st.subheader("Inventory Lookup & Edit")
-    # Tabela base sempre inicia com TODOS os itens do banco
     df_estoque = pd.read_sql_query("SELECT id AS 'ID', estoque_origem AS 'Warehouse', spare_part AS 'Spare Part', part_number AS 'Part Number', numero_serie AS 'Serial Number', quantidade AS 'Current Qty', system AS 'System' FROM estoque", conn)
     
     busca = st.text_input("Search (Partial characters allowed, e.g., part name, P/N, S/N, warehouse or system)...", value="", placeholder="Type to filter. Clear the text to show all items again.")
@@ -437,11 +438,19 @@ with abas[1]:
     
     st.caption(f"Showing {len(df_estoque)} item(s).")
     
+    # Função para colorir a linha toda de vermelho escuro quando o estoque for zero
+    def highlight_zero_stock(row):
+        if row['Current Qty'] == 0:
+            return ['background-color: rgba(255, 77, 77, 0.25); color: #ffcccc;'] * len(row)
+        return [''] * len(row)
+
+    styled_df_estoque = df_estoque.style.apply(highlight_zero_stock, axis=1)
+    
     if st.session_state.perfil_atual == "ADMIN":
         st.markdown("💡 **Admin Mode:** Edit values directly in the table below. Click the 'Warehouse' cell to see the dropdown.")
         
         edited_df = st.data_editor(
-            df_estoque,
+            styled_df_estoque,
             use_container_width=True,
             hide_index=True,
             disabled=["ID"],
@@ -493,7 +502,7 @@ with abas[1]:
                         st.success("All changes saved successfully!")
                         st.rerun()
     else:
-        st.dataframe(df_estoque, use_container_width=True, hide_index=True)
+        st.dataframe(styled_df_estoque, use_container_width=True, hide_index=True)
 
 with abas[2]:
     st.subheader("Register New Item to Inventory")
