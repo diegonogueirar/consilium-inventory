@@ -191,6 +191,9 @@ def iniciar_banco():
     conn.commit()
     return conn
 
+# ESSA É A LINHA QUE FALTAVA
+conn = iniciar_banco()
+
 def limpar_dado(valor):
     if pd.isna(valor) or valor is None:
         return ""
