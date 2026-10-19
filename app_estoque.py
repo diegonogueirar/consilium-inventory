@@ -127,16 +127,22 @@ def iniciar_banco():
     conn = sqlite3.connect("estoque_empresa.db", check_same_thread=False)
     c = conn.cursor()
     
-    # Assegura tabela de estoque sem restrições restritas
+    # Mantém a estrutura original base para não quebrar bancos antigos
     c.execute('''CREATE TABLE IF NOT EXISTS estoque (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     spare_part TEXT NOT NULL,
-                    part_number TEXT,
                     numero_serie TEXT,
                     quantidade INTEGER NOT NULL,
-                    estoque_origem TEXT NOT NULL,
-                    system TEXT NOT NULL
+                    localizacao TEXT NOT NULL
                 )''')
+    
+    colunas_estoque = [col[1] for col in c.execute("PRAGMA table_info(estoque)").fetchall()]
+    if 'part_number' not in colunas_estoque:
+        c.execute("ALTER TABLE estoque ADD COLUMN part_number TEXT")
+    if 'estoque_origem' not in colunas_estoque:
+        c.execute("ALTER TABLE estoque ADD COLUMN estoque_origem TEXT DEFAULT 'Santa Catarina'")
+    if 'system' not in colunas_estoque:
+        c.execute("ALTER TABLE estoque ADD COLUMN system TEXT DEFAULT 'General'")
 
     c.execute('''CREATE TABLE IF NOT EXISTS historico (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -144,14 +150,19 @@ def iniciar_banco():
                     usuario TEXT NOT NULL,
                     tipo_movimento TEXT NOT NULL,
                     spare_part TEXT NOT NULL,
-                    part_number TEXT,
                     numero_serie TEXT,
                     quantidade INTEGER NOT NULL,
-                    estoque_origem TEXT,
-                    system TEXT,
                     navio TEXT,
                     work_order TEXT
                 )''')
+    
+    colunas_hist = [col[1] for col in c.execute("PRAGMA table_info(historico)").fetchall()]
+    if 'part_number' not in colunas_hist:
+        c.execute("ALTER TABLE historico ADD COLUMN part_number TEXT")
+    if 'estoque_origem' not in colunas_hist:
+        c.execute("ALTER TABLE historico ADD COLUMN estoque_origem TEXT")
+    if 'system' not in colunas_hist:
+        c.execute("ALTER TABLE historico ADD COLUMN system TEXT")
 
     c.execute('''CREATE TABLE IF NOT EXISTS usuarios (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -164,7 +175,6 @@ def iniciar_banco():
                     data_cadastro TEXT NOT NULL,
                     pedido_reset INTEGER DEFAULT 0
                 )''')
-    
     c.execute('''CREATE TABLE IF NOT EXISTS config_email (
                     id INTEGER PRIMARY KEY CHECK (id = 1),
                     smtp_server TEXT,
@@ -443,8 +453,11 @@ with abas[2]:
                     c = conn.cursor()
                     val_pn = novo_pn.strip() if novo_pn else ""
                     val_sn = novo_sn.strip() if novo_sn else ""
-                    c.execute("INSERT INTO estoque (spare_part, part_number, numero_serie, quantidade, estoque_origem, system) VALUES (?, ?, ?, ?, ?, ?)",
-                              (novo_spare.strip(), val_pn, val_sn, int(nova_qtd), estoque_escolhido, novo_system.strip()))
+                    
+                    # Incluída a coluna antiga 'localizacao' preenchida automaticamente com o mesmo valor de 'system'
+                    # para evitar que bancos de dados antigos da nuvem travem por "NOT NULL"
+                    c.execute("INSERT INTO estoque (spare_part, part_number, numero_serie, quantidade, estoque_origem, system, localizacao) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                              (novo_spare.strip(), val_pn, val_sn, int(nova_qtd), estoque_escolhido, novo_system.strip(), novo_system.strip()))
                     agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
                     sql_hist_in = "INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                     c.execute(sql_hist_in, (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "IN (REGISTRATION)", novo_spare.strip(), val_pn, val_sn, int(nova_qtd), estoque_escolhido, novo_system.strip(), "-", "-"))
