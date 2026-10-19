@@ -417,6 +417,7 @@ with abas[1]:
     st.subheader("Inventory Lookup")
     busca = st.text_input("Search (Partial characters allowed, e.g., part name, P/N, S/N, warehouse or system)...")
     df_estoque = pd.read_sql_query("SELECT id AS 'ID', estoque_origem AS 'Warehouse', spare_part AS 'Spare Part', part_number AS 'Part Number', numero_serie AS 'Serial Number', quantidade AS 'Current Qty', system AS 'System' FROM estoque", conn)
+    
     if busca:
         busca_lower = busca.lower()
         filtro = (
@@ -428,6 +429,66 @@ with abas[1]:
         )
         df_estoque = df_estoque[filtro]
     st.dataframe(df_estoque, use_container_width=True, hide_index=True)
+
+    # Nova seção exclusiva para Administradores editarem peças
+    if st.session_state.perfil_atual == "ADMIN":
+        st.markdown("---")
+        st.subheader("✏️ Edit Part Information (Admin Only)")
+        
+        df_todas_pecas_edit = pd.read_sql_query("SELECT * FROM estoque", conn)
+        if not df_todas_pecas_edit.empty:
+            opcoes_edit = {}
+            for _, row in df_todas_pecas_edit.iterrows():
+                pn_text = f" | P/N: {row['part_number']}" if row['part_number'] else ""
+                sn_text = f" | S/N: {row['numero_serie']}" if row['numero_serie'] else ""
+                label = f"[{row['estoque_origem']}] {row['spare_part']}{pn_text}{sn_text} | Sys: {row['system']} (Qty: {row['quantidade']})"
+                opcoes_edit[label] = row['id']
+            
+            peca_edit_label = st.selectbox("Select Part to Edit", list(opcoes_edit.keys()))
+            id_edit = opcoes_edit[peca_edit_label]
+            dados_atuais = df_todas_pecas_edit[df_todas_pecas_edit['id'] == id_edit].iloc[0]
+            
+            with st.form("form_editar_peca"):
+                col_e1, col_e2 = st.columns(2)
+                with col_e1:
+                    wh_options = ["Santa Catarina", "Duci", "Diego"]
+                    current_wh = dados_atuais['estoque_origem']
+                    wh_index = wh_options.index(current_wh) if current_wh in wh_options else 0
+                    
+                    edit_wh = st.selectbox("Warehouse *", wh_options, index=wh_index)
+                    edit_spare = st.text_input("Spare Part Name *", value=dados_atuais['spare_part'])
+                    edit_pn = st.text_input("Part Number (P/N)", value=dados_atuais['part_number'] if dados_atuais['part_number'] else "")
+                with col_e2:
+                    edit_sn = st.text_input("Serial Number (S/N)", value=dados_atuais['numero_serie'] if dados_atuais['numero_serie'] else "")
+                    edit_qtd = st.number_input("Quantity *", min_value=0, step=1, value=int(dados_atuais['quantidade']))
+                    edit_system = st.text_input("System *", value=dados_atuais['system'])
+                
+                motivo_edicao = st.text_input("Reason for Edit (Required for Log) *", placeholder="Ex: Corrected P/N or Transferred to Duci Warehouse")
+                
+                btn_salvar_edicao = st.form_submit_button("Save Changes", use_container_width=True)
+                if btn_salvar_edicao:
+                    if not edit_spare.strip() or not edit_system.strip() or not motivo_edicao.strip():
+                        st.error("Spare Part Name, System, and Reason for Edit are required.")
+                    else:
+                        c = conn.cursor()
+                        val_pn = edit_pn.strip() if edit_pn else ""
+                        val_sn = edit_sn.strip() if edit_sn else ""
+                        val_sys = edit_system.strip()
+                        
+                        # Atualiza as colunas novas e a antiga localizacao para evitar erros no DB na nuvem
+                        c.execute("UPDATE estoque SET spare_part=?, part_number=?, numero_serie=?, quantidade=?, estoque_origem=?, system=?, localizacao=? WHERE id=?",
+                                  (edit_spare.strip(), val_pn, val_sn, int(edit_qtd), edit_wh, val_sys, val_sys, int(id_edit)))
+                        
+                        agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+                        obs_mov = f"EDIT: {motivo_edicao.strip()}"
+                        
+                        # Registra no histórico
+                        sql_hist_edit = "INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                        c.execute(sql_hist_edit, (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "EDIT (ADMIN)", edit_spare.strip(), val_pn, val_sn, int(edit_qtd), edit_wh, val_sys, "-", obs_mov))
+                        
+                        conn.commit()
+                        st.success("Part updated successfully!")
+                        st.rerun()
 
 with abas[2]:
     st.subheader("Register New Item to Inventory")
@@ -454,8 +515,6 @@ with abas[2]:
                     val_pn = novo_pn.strip() if novo_pn else ""
                     val_sn = novo_sn.strip() if novo_sn else ""
                     
-                    # Incluída a coluna antiga 'localizacao' preenchida automaticamente com o mesmo valor de 'system'
-                    # para evitar que bancos de dados antigos da nuvem travem por "NOT NULL"
                     c.execute("INSERT INTO estoque (spare_part, part_number, numero_serie, quantidade, estoque_origem, system, localizacao) VALUES (?, ?, ?, ?, ?, ?, ?)",
                               (novo_spare.strip(), val_pn, val_sn, int(nova_qtd), estoque_escolhido, novo_system.strip(), novo_system.strip()))
                     agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
@@ -569,7 +628,7 @@ with abas[5]:
 
 if st.session_state.perfil_atual == "ADMIN":
     with abas[6]:
-        st.subheader("Administrator Panel - User & Inventory Management")
+        st.subheader("Administrator Panel - User Management")
         c_adm = conn.cursor()
         c_adm.execute("SELECT id, username, nome_completo, email, perfil, status, data_cadastro, pedido_reset FROM usuarios ORDER BY status DESC, pedido_reset DESC, id ASC")
         users_rows = c_adm.fetchall()
@@ -603,25 +662,6 @@ if st.session_state.perfil_atual == "ADMIN":
                             st.success(f"Password reset for {u_row[1]}!")
                             st.rerun()
                             
-        st.markdown("---")
-        st.markdown("### Edit Part Warehouse (Transfer Location)")
-        df_pecas_adm = pd.read_sql_query("SELECT id, spare_part, part_number, estoque_origem, system FROM estoque", conn)
-        if df_pecas_adm.empty:
-            st.info("No parts available to edit.")
-        else:
-            with st.form("form_mudar_warehouse"):
-                opcoes_wh = {f"[{r['estoque_origem']}] {r['spare_part']} (P/N: {r['part_number'] or 'N/A'}) - Sys: {r['system']}": r['id'] for _, r in df_pecas_adm.iterrows()}
-                peca_sel_wh = st.selectbox("Select Part to Transfer", list(opcoes_wh.keys()))
-                novo_wh_escolhido = st.selectbox("New Warehouse", ["Santa Catarina", "Duci", "Diego"])
-                
-                btn_salvar_wh = st.form_submit_button("Update Part Warehouse", use_container_width=True)
-                if btn_salvar_wh:
-                    id_peca_wh = opcoes_wh[peca_sel_wh]
-                    c_adm.execute("UPDATE estoque SET estoque_origem = ? WHERE id = ?", (novo_wh_escolhido, int(id_peca_wh)))
-                    conn.commit()
-                    st.success(f"Warehouse successfully updated to '{novo_wh_escolhido}'!")
-                    st.rerun()
-
         st.markdown("---")
         st.markdown("### All Registered Users & Management")
         
