@@ -136,10 +136,14 @@ def iniciar_banco():
                     system TEXT NOT NULL
                 )''')
     
-    try:
+    # Garantia de colunas caso o banco antigo já exista
+    colunas_estoque = [col[1] for col in c.execute("PRAGMA table_info(estoque)").fetchall()]
+    if 'part_number' not in colunas_estoque:
+        c.execute("ALTER TABLE estoque ADD COLUMN part_number TEXT")
+    if 'estoque_origem' not in colunas_estoque:
+        c.execute("ALTER TABLE estoque ADD COLUMN estoque_origem TEXT DEFAULT 'Santa Catarina'")
+    if 'system' not in colunas_estoque:
         c.execute("ALTER TABLE estoque ADD COLUMN system TEXT DEFAULT 'General'")
-    except:
-        pass
 
     c.execute('''CREATE TABLE IF NOT EXISTS historico (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -156,10 +160,13 @@ def iniciar_banco():
                     work_order TEXT
                 )''')
     
-    try:
+    colunas_hist = [col[1] for col in c.execute("PRAGMA table_info(historico)").fetchall()]
+    if 'part_number' not in colunas_hist:
+        c.execute("ALTER TABLE historico ADD COLUMN part_number TEXT")
+    if 'estoque_origem' not in colunas_hist:
+        c.execute("ALTER TABLE historico ADD COLUMN estoque_origem TEXT")
+    if 'system' not in colunas_hist:
         c.execute("ALTER TABLE historico ADD COLUMN system TEXT")
-    except:
-        pass
 
     c.execute('''CREATE TABLE IF NOT EXISTS usuarios (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -371,9 +378,14 @@ with abas[0]:
     else:
         opcoes_pecas = {}
         for _, row in df_disponivel.iterrows():
-            pn_text = f" | P/N: {row['part_number']}" if row['part_number'] else ""
-            sn_texto = f" | S/N: {row['numero_serie']}" if row['numero_serie'] else ""
-            label = f"[{row['estoque_origem']}] {row['spare_part']}{pn_text}{sn_texto} | Sys: {row['system']} (Avail: {row['quantidade']})"
+            pn_val = row.get('part_number', '')
+            sn_val = row.get('numero_serie', '')
+            sys_val = row.get('system', '')
+            orig_val = row.get('estoque_origem', '')
+            
+            pn_text = f" | P/N: {pn_val}" if pn_val else ""
+            sn_text = f" | S/N: {sn_val}" if sn_val else ""
+            label = f"[{orig_val}] {row['spare_part']}{pn_text}{sn_text} | Sys: {sys_val} (Avail: {row['quantidade']})"
             opcoes_pecas[label] = row['id']
         
         with st.form("form_baixa_servico"):
@@ -400,7 +412,7 @@ with abas[0]:
                     c.execute("UPDATE estoque SET quantidade = ? WHERE id = ?", (nova_qtd, int(id_peca)))
                     agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
                     sql_hist = "INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                    c.execute(sql_hist, (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "OUT (SERVICE)", dados_peca['spare_part'], dados_peca['part_number'], dados_peca['numero_serie'], int(qtd_retirada), dados_peca['estoque_origem'], dados_peca['system'], navio.strip(), work_order.strip()))
+                    c.execute(sql_hist, (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "OUT (SERVICE)", dados_peca['spare_part'], dados_peca.get('part_number', ''), dados_peca.get('numero_serie', ''), int(qtd_retirada), dados_peca.get('estoque_origem', ''), dados_peca.get('system', ''), navio.strip(), work_order.strip()))
                     conn.commit()
                     st.success(f"Checkout successfully recorded for vessel {navio}!")
                     st.rerun()
