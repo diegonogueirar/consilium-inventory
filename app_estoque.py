@@ -126,6 +126,8 @@ aplicar_estilo_consilium()
 def iniciar_banco():
     conn = sqlite3.connect("estoque_empresa.db", check_same_thread=False)
     c = conn.cursor()
+    
+    # Cria tabela de estoque sem restrições restritas de UNIQUE
     c.execute('''CREATE TABLE IF NOT EXISTS estoque (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     spare_part TEXT NOT NULL,
@@ -455,10 +457,10 @@ with abas[2]:
                 else:
                     c = conn.cursor()
                     c.execute("INSERT INTO estoque (spare_part, part_number, numero_serie, quantidade, estoque_origem, system) VALUES (?, ?, ?, ?, ?, ?)",
-                              (novo_spare.strip(), novo_pn.strip(), novo_sn.strip(), int(nova_qtd), estoque_escolhido, novo_system.strip()))
+                              (novo_spare.strip(), novo_pn.strip() if novo_pn else "", novo_sn.strip() if novo_sn else "", int(nova_qtd), estoque_escolhido, novo_system.strip()))
                     agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
                     sql_hist_in = "INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                    c.execute(sql_hist_in, (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "IN (REGISTRATION)", novo_spare.strip(), novo_pn.strip(), novo_sn.strip(), int(nova_qtd), estoque_escolhido, novo_system.strip(), "-", "-"))
+                    c.execute(sql_hist_in, (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "IN (REGISTRATION)", novo_spare.strip(), novo_pn.strip() if novo_pn else "", novo_sn.strip() if novo_sn else "", int(nova_qtd), estoque_escolhido, novo_system.strip(), "-", "-"))
                     conn.commit()
                     st.success(f"Part registered successfully in warehouse '{estoque_escolhido}'!")
                     st.rerun()
