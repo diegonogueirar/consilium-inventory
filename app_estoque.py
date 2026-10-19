@@ -191,7 +191,6 @@ def iniciar_banco():
     conn.commit()
     return conn
 
-# ESSA É A LINHA QUE FALTAVA
 conn = iniciar_banco()
 
 def limpar_dado(valor):
@@ -419,12 +418,14 @@ with abas[0]:
                     st.rerun()
 
 with abas[1]:
-    st.subheader("Inventory Lookup")
-    busca = st.text_input("Search (Partial characters allowed, e.g., part name, P/N, S/N, warehouse or system)...")
+    st.subheader("Inventory Lookup & Edit")
+    # Tabela base sempre inicia com TODOS os itens do banco
     df_estoque = pd.read_sql_query("SELECT id AS 'ID', estoque_origem AS 'Warehouse', spare_part AS 'Spare Part', part_number AS 'Part Number', numero_serie AS 'Serial Number', quantidade AS 'Current Qty', system AS 'System' FROM estoque", conn)
     
-    if busca:
-        busca_lower = busca.lower()
+    busca = st.text_input("Search (Partial characters allowed, e.g., part name, P/N, S/N, warehouse or system)...", value="", placeholder="Type to filter. Clear the text to show all items again.")
+    
+    if busca.strip():
+        busca_lower = busca.strip().lower()
         filtro = (
             df_estoque['Warehouse'].str.lower().str.contains(busca_lower, na=False) |
             df_estoque['Spare Part'].str.lower().str.contains(busca_lower, na=False) |
@@ -433,6 +434,8 @@ with abas[1]:
             df_estoque['System'].str.lower().str.contains(busca_lower, na=False)
         )
         df_estoque = df_estoque[filtro]
+    
+    st.caption(f"Showing {len(df_estoque)} item(s).")
     
     if st.session_state.perfil_atual == "ADMIN":
         st.markdown("💡 **Admin Mode:** Edit values directly in the table below. Click the 'Warehouse' cell to see the dropdown.")
