@@ -146,7 +146,7 @@ def iniciar_banco():
     if 'system' not in colunas_estoque:
         c.execute("ALTER TABLE estoque ADD COLUMN system TEXT DEFAULT 'General'")
 
-    # Tabelas para o inventário de navios (Adicionada verificação para sg_number)
+    # Tabelas para o inventário de navios
     c.execute('''CREATE TABLE IF NOT EXISTS navios (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     nome_navio TEXT UNIQUE NOT NULL
@@ -222,6 +222,8 @@ def iniciar_banco():
     colunas_ferramentas = [col[1] for col in c.execute("PRAGMA table_info(ferramentas)").fetchall()]
     if 'system' not in colunas_ferramentas:
         c.execute("ALTER TABLE ferramentas ADD COLUMN system TEXT DEFAULT 'General'")
+    if 'part_number' not in colunas_ferramentas:
+        c.execute("ALTER TABLE ferramentas ADD COLUMN part_number TEXT")
     
     agora = datetime.now().strftime("%d/%m/%Y %H:%M")
     c.execute("SELECT COUNT(*) FROM usuarios WHERE perfil = 'ADMIN'")
@@ -537,7 +539,6 @@ with abas[2]:
                         st.error("Vessel Name and SG Number are required.")
                     else:
                         c = conn.cursor()
-                        # Verifica duplicidade usando Nome OU SG Number
                         c.execute("SELECT nome_navio, sg_number FROM navios WHERE UPPER(nome_navio) = ? OR UPPER(sg_number) = ?", 
                                   (novo_navio_nome.strip().upper(), novo_sg_number.strip().upper()))
                         duplicata = c.fetchone()
@@ -821,13 +822,24 @@ with abas[6]:
     
     with st.form("form_add_tool"):
         st.markdown("#### Assign a New Tool")
-        col_t1, col_t2, col_t3 = st.columns([2, 1, 1])
+        
+        # Extrai as categorias únicas já existentes para preencher o dropdown
+        df_sys_tools = pd.read_sql_query("SELECT DISTINCT system FROM ferramentas UNION SELECT DISTINCT system FROM estoque ORDER BY system", conn)
+        lista_sys_tools = [s for s in df_sys_tools['system'].tolist() if s]
+        opt_new_sys = "➕ New / Manual Entry"
+        
+        col_t1, col_t2 = st.columns(2)
         with col_t1:
             t_nome = st.text_input("Tool Name / Description *", placeholder="Ex: Multimeter Fluke 115")
+            t_id = st.text_input("Serial Number / Asset Tag (Optional)", placeholder="Ex: S/N 123456")
         with col_t2:
-            t_id = st.text_input("Serial Number / Asset Tag", placeholder="Ex: S/N 123456")
-        with col_t3:
-            t_sys = st.text_input("System (Category) *", placeholder="Ex: Fire Alarm")
+            t_pn = st.text_input("Part Number (P/N) (Optional)", placeholder="Ex: 115-EUR")
+            
+            t_sys_sel = st.selectbox("System (Category) *", [opt_new_sys] + lista_sys_tools)
+            if t_sys_sel == opt_new_sys:
+                t_sys = st.text_input("Type System (Category) *", placeholder="Ex: Fire Alarm")
+            else:
+                t_sys = t_sys_sel
         
         btn_add_tool = st.form_submit_button("Assign Tool to Me", use_container_width=True)
         if btn_add_tool:
@@ -836,8 +848,8 @@ with abas[6]:
             else:
                 c = conn.cursor()
                 agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-                c.execute("INSERT INTO ferramentas (ferramenta, identificacao, usuario, data_retirada, status, system) VALUES (?, ?, ?, ?, 'EM POSSE', ?)",
-                          (t_nome.strip(), t_id.strip(), st.session_state.usuario_atual, agora, t_sys.strip()))
+                c.execute("INSERT INTO ferramentas (ferramenta, part_number, identificacao, usuario, data_retirada, status, system) VALUES (?, ?, ?, ?, ?, 'EM POSSE', ?)",
+                          (t_nome.strip(), t_pn.strip() if t_pn else "", t_id.strip() if t_id else "", st.session_state.usuario_atual, agora, t_sys.strip()))
                 conn.commit()
                 st.success("Tool added to your cautela!")
                 st.rerun()
@@ -857,7 +869,7 @@ with abas[6]:
     user_selecionado_label = st.selectbox("Select Technician to View Tools:", list(dict_users.keys()), index=default_idx)
     user_selecionado = dict_users[user_selecionado_label]
     
-    df_my_tools = pd.read_sql_query("SELECT id AS 'ID', system AS 'System', ferramenta AS 'Tool Name', identificacao AS 'Identification', data_retirada AS 'Date Assigned', status AS 'Status' FROM ferramentas WHERE usuario = ? AND status = 'EM POSSE' ORDER BY system, ferramenta", conn, params=(user_selecionado,))
+    df_my_tools = pd.read_sql_query("SELECT id AS 'ID', system AS 'System', ferramenta AS 'Tool Name', part_number AS 'Part Number', identificacao AS 'Identification', data_retirada AS 'Date Assigned', status AS 'Status' FROM ferramentas WHERE usuario = ? AND status = 'EM POSSE' ORDER BY system, ferramenta", conn, params=(user_selecionado,))
     
     if df_my_tools.empty:
         st.info(f"No tools currently assigned to {user_selecionado_label}.")
@@ -870,7 +882,7 @@ with abas[6]:
                 df_my_tools,
                 use_container_width=True,
                 hide_index=True,
-                disabled=["ID", "System", "Tool Name", "Identification", "Date Assigned"],
+                disabled=["ID", "System", "Tool Name", "Part Number", "Identification", "Date Assigned"],
                 column_config={
                     "Status": st.column_config.SelectboxColumn("Status", options=["EM POSSE", "DEVOLVIDA"], required=True)
                 }
@@ -1009,7 +1021,7 @@ if st.session_state.perfil_atual == "ADMIN":
                             
         st.markdown("---")
         st.markdown("### Global Tools Management (All Technicians)")
-        df_all_tools = pd.read_sql_query("SELECT f.id AS 'ID', u.nome_completo AS 'Technician', f.system AS 'System', f.ferramenta AS 'Tool Name', f.identificacao AS 'Identification', f.data_retirada AS 'Date Assigned', f.status AS 'Status' FROM ferramentas f JOIN usuarios u ON f.usuario = u.username ORDER BY f.status DESC, f.system, f.data_retirada DESC", conn)
+        df_all_tools = pd.read_sql_query("SELECT f.id AS 'ID', u.nome_completo AS 'Technician', f.system AS 'System', f.ferramenta AS 'Tool Name', f.part_number AS 'Part Number', f.identificacao AS 'Identification', f.data_retirada AS 'Date Assigned', f.status AS 'Status' FROM ferramentas f JOIN usuarios u ON f.usuario = u.username ORDER BY f.status DESC, f.system, f.data_retirada DESC", conn)
         if df_all_tools.empty:
             st.info("No tools currently assigned to any technicians.")
         else:
