@@ -146,11 +146,15 @@ def iniciar_banco():
     if 'system' not in colunas_estoque:
         c.execute("ALTER TABLE estoque ADD COLUMN system TEXT DEFAULT 'General'")
 
-    # Tabelas para o inventário de navios
+    # Tabelas para o inventário de navios (Adicionada verificação para sg_number)
     c.execute('''CREATE TABLE IF NOT EXISTS navios (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     nome_navio TEXT UNIQUE NOT NULL
                 )''')
+                
+    colunas_navios = [col[1] for col in c.execute("PRAGMA table_info(navios)").fetchall()]
+    if 'sg_number' not in colunas_navios:
+        c.execute("ALTER TABLE navios ADD COLUMN sg_number TEXT")
 
     c.execute('''CREATE TABLE IF NOT EXISTS estoque_navios (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -470,7 +474,6 @@ with abas[1]:
     st.subheader("Warranty Parts")
     st.info("Register parts dispatched under warranty directly to a vessel (Non-Inventory). Start typing to autocomplete from existing records.")
     
-    # Extraindo dados únicos para o Autocomplete (Dropdown inteligente)
     df_navios_w = pd.read_sql_query("SELECT DISTINCT nome_navio FROM navios UNION SELECT DISTINCT navio FROM historico ORDER BY nome_navio", conn)
     lista_navios_w = [v for v in df_navios_w['nome_navio'].tolist() if v]
     
@@ -526,19 +529,26 @@ with abas[2]:
             with st.form("form_novo_navio", clear_on_submit=True):
                 st.markdown("#### 1. Register New Vessel")
                 novo_navio_nome = st.text_input("Vessel Name *", placeholder="Ex: MV Atlantic")
+                novo_sg_number = st.text_input("SG Number *", placeholder="Ex: SG-12345")
+                
                 btn_novo_navio = st.form_submit_button("Save Vessel", use_container_width=True)
                 if btn_novo_navio:
-                    if not novo_navio_nome.strip():
-                        st.error("Vessel Name is required.")
+                    if not novo_navio_nome.strip() or not novo_sg_number.strip():
+                        st.error("Vessel Name and SG Number are required.")
                     else:
-                        try:
-                            c = conn.cursor()
-                            c.execute("INSERT INTO navios (nome_navio) VALUES (?)", (novo_navio_nome.strip().upper(),))
+                        c = conn.cursor()
+                        # Verifica duplicidade usando Nome OU SG Number
+                        c.execute("SELECT nome_navio, sg_number FROM navios WHERE UPPER(nome_navio) = ? OR UPPER(sg_number) = ?", 
+                                  (novo_navio_nome.strip().upper(), novo_sg_number.strip().upper()))
+                        duplicata = c.fetchone()
+                        
+                        if duplicata:
+                            st.error(f"⚠️ Error: A vessel is already registered with the Name '{duplicata[0]}' or SG Number '{duplicata[1]}'. Duplicates are not allowed.")
+                        else:
+                            c.execute("INSERT INTO navios (nome_navio, sg_number) VALUES (?, ?)", (novo_navio_nome.strip().upper(), novo_sg_number.strip().upper()))
                             conn.commit()
                             st.success(f"Vessel '{novo_navio_nome.upper()}' registered successfully!")
                             st.rerun()
-                        except sqlite3.IntegrityError:
-                            st.error("This vessel is already registered.")
         
         with col_v2:
             with st.form("form_add_peca_navio", clear_on_submit=True):
@@ -582,7 +592,6 @@ with abas[2]:
     if not lista_navios:
         st.info("No vessels registered yet.")
     else:
-        # Dropdown proeminente para filtrar por Navio
         filtro_navio = st.selectbox("🔍 Select a Vessel to filter the list below:", ["All Vessels"] + lista_navios)
         
         query_v = "SELECT id AS 'ID', navio AS 'Vessel', estoque_origem AS 'Warehouse', spare_part AS 'Spare Part', part_number AS 'Part Number', numero_serie AS 'Serial Number', quantidade AS 'Qty', system AS 'System' FROM estoque_navios"
