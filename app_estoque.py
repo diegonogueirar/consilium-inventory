@@ -176,12 +176,23 @@ def iniciar_banco():
                     data_cadastro TEXT NOT NULL,
                     pedido_reset INTEGER DEFAULT 0
                 )''')
+                
     c.execute('''CREATE TABLE IF NOT EXISTS config_email (
                     id INTEGER PRIMARY KEY CHECK (id = 1),
                     smtp_server TEXT,
                     smtp_port INTEGER,
                     email_remetente TEXT,
                     senha_app TEXT
+                )''')
+                
+    # Tabela para Cautela de Ferramentas
+    c.execute('''CREATE TABLE IF NOT EXISTS ferramentas (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ferramenta TEXT NOT NULL,
+                    identificacao TEXT,
+                    usuario TEXT NOT NULL,
+                    data_retirada TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'EM POSSE'
                 )''')
     
     agora = datetime.now().strftime("%d/%m/%Y %H:%M")
@@ -366,7 +377,18 @@ k4.metric("Vessel Dispatches", len(df_hist_total))
 
 st.write("")
 
-lista_abas = ["Checkout Parts", "Check Inventory", "Register Part", "Add/Restock Parts", "Service Checkouts", "Full History", "My Profile"]
+lista_abas = [
+    "Checkout Parts", 
+    "Direct Dispatch", 
+    "Check Inventory", 
+    "Register Part", 
+    "Add/Restock Parts", 
+    "My Tools (Cautela)", 
+    "Service Checkouts", 
+    "Full History", 
+    "My Profile"
+]
+
 if st.session_state.perfil_atual == "ADMIN":
     lista_abas.append("Admin Panel")
 
@@ -420,6 +442,36 @@ with abas[0]:
                     st.rerun()
 
 with abas[1]:
+    st.subheader("Direct Dispatch (Warranty / Non-Inventory)")
+    st.info("Use this section to register parts sent directly to a vessel without touching the main warehouse inventory.")
+    with st.form("form_direct_dispatch"):
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
+            d_spare = st.text_input("Spare Part Name *", placeholder="Ex: Smoke Detector")
+            d_pn = st.text_input("Part Number (P/N)", placeholder="Ex: 520023")
+            d_sn = st.text_input("Serial Number (S/N)", placeholder="Ex: S/N-998822")
+            d_sys = st.text_input("System *", placeholder="Ex: Fire Alarm")
+        with col_d2:
+            d_qtd = st.number_input("Quantity *", min_value=1, step=1, value=1)
+            d_navio = st.text_input("Vessel Name *", placeholder="Ex: MV Atlantic")
+            d_wo = st.text_input("Work Order (WO) *", placeholder="Ex: WO-2026-105")
+            d_type = st.selectbox("Dispatch Type", ["WARRANTY", "DIRECT PURCHASE", "EXCHANGE"])
+        
+        btn_direct = st.form_submit_button("Record Direct Dispatch", use_container_width=True)
+        if btn_direct:
+            if not d_spare.strip() or not d_navio.strip() or not d_wo.strip() or not d_sys.strip():
+                st.error("Please fill in all required fields (*).")
+            else:
+                c = conn.cursor()
+                agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+                mov_type = f"DIRECT TO VESSEL ({d_type})"
+                c.execute("INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                          (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", mov_type, d_spare.strip(), d_pn.strip(), d_sn.strip(), int(d_qtd), "NON-INVENTORY", d_sys.strip(), d_navio.strip(), d_wo.strip()))
+                conn.commit()
+                st.success(f"Direct dispatch successfully recorded for vessel {d_navio}!")
+                st.rerun()
+
+with abas[2]:
     st.subheader("Inventory Lookup & Edit")
     df_estoque = pd.read_sql_query("SELECT id AS 'ID', estoque_origem AS 'Warehouse', spare_part AS 'Spare Part', part_number AS 'Part Number', numero_serie AS 'Serial Number', quantidade AS 'Current Qty', system AS 'System' FROM estoque", conn)
     
@@ -438,7 +490,6 @@ with abas[1]:
     
     st.caption(f"Showing {len(df_estoque)} item(s).")
     
-    # Função para colorir a linha toda de vermelho escuro quando o estoque for zero
     def highlight_zero_stock(row):
         if row['Current Qty'] == 0:
             return ['background-color: rgba(255, 77, 77, 0.25); color: #ffcccc;'] * len(row)
@@ -504,7 +555,7 @@ with abas[1]:
     else:
         st.dataframe(styled_df_estoque, use_container_width=True, hide_index=True)
 
-with abas[2]:
+with abas[3]:
     st.subheader("Register New Item to Inventory")
     if st.session_state.perfil_atual != "ADMIN":
         st.error("🚫 Access Denied: Only Administrators can register new parts into inventory.")
@@ -538,7 +589,7 @@ with abas[2]:
                     st.success(f"Part registered successfully in warehouse '{estoque_escolhido}'!")
                     st.rerun()
 
-with abas[3]:
+with abas[4]:
     st.subheader("Add / Restock Existing Parts")
     if st.session_state.perfil_atual != "ADMIN":
         st.error("🚫 Access Denied: Only Administrators can restock inventory.")
@@ -579,10 +630,71 @@ with abas[3]:
                     st.success(f"Successfully added {qtd_adicional} unit(s) to '{dados_rep['spare_part']}'. New total: {nova_qtd_total}")
                     st.rerun()
 
-with abas[4]:
+with abas[5]:
+    st.subheader("My Tools (Cautela)")
+    st.markdown("Manage the tools currently assigned to your responsibility.")
+    
+    with st.form("form_add_tool"):
+        col_t1, col_t2 = st.columns(2)
+        with col_t1:
+            t_nome = st.text_input("Tool Name / Description *", placeholder="Ex: Multimeter Fluke 115")
+        with col_t2:
+            t_id = st.text_input("Serial Number / Asset Tag (Optional)", placeholder="Ex: S/N 123456")
+        
+        btn_add_tool = st.form_submit_button("Add Tool to My Custody", use_container_width=True)
+        if btn_add_tool:
+            if not t_nome.strip():
+                st.error("Tool Name is required.")
+            else:
+                c = conn.cursor()
+                agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+                c.execute("INSERT INTO ferramentas (ferramenta, identificacao, usuario, data_retirada, status) VALUES (?, ?, ?, ?, 'EM POSSE')",
+                          (t_nome.strip(), t_id.strip(), st.session_state.usuario_atual, agora))
+                conn.commit()
+                st.success("Tool added to your cautela!")
+                st.rerun()
+                
+    st.markdown("---")
+    st.markdown("#### Tools Currently in My Possession")
+    df_my_tools = pd.read_sql_query("SELECT id AS 'ID', ferramenta AS 'Tool Name', identificacao AS 'Identification', data_retirada AS 'Date Assigned', status AS 'Status' FROM ferramentas WHERE usuario = ? AND status = 'EM POSSE'", conn, params=(st.session_state.usuario_atual,))
+    
+    if df_my_tools.empty:
+        st.info("You do not have any tools currently assigned to you.")
+    else:
+        st.caption("Change the status to 'DEVOLVIDA' and click confirm to return a tool.")
+        edited_tools = st.data_editor(
+            df_my_tools,
+            use_container_width=True,
+            hide_index=True,
+            disabled=["ID", "Tool Name", "Identification", "Date Assigned"],
+            column_config={
+                "Status": st.column_config.SelectboxColumn("Status", options=["EM POSSE", "DEVOLVIDA"], required=True)
+            }
+        )
+        
+        mudancas_ferramentas = []
+        for i in range(len(df_my_tools)):
+            if df_my_tools.iloc[i]['Status'] != edited_tools.iloc[i]['Status']:
+                mudancas_ferramentas.append(edited_tools.iloc[i])
+                
+        if mudancas_ferramentas:
+            if st.button("Confirm Tool Returns", use_container_width=True):
+                c = conn.cursor()
+                for edit in mudancas_ferramentas:
+                    c.execute("UPDATE ferramentas SET status = ? WHERE id = ?", (edit['Status'], int(edit['ID'])))
+                conn.commit()
+                st.success("Tools status updated successfully!")
+                st.rerun()
+                
+    st.markdown("---")
+    st.markdown("#### My Tool History (Returned)")
+    df_my_tools_hist = pd.read_sql_query("SELECT ferramenta AS 'Tool Name', identificacao AS 'Identification', data_retirada AS 'Date Assigned', status AS 'Status' FROM ferramentas WHERE usuario = ? AND status = 'DEVOLVIDA'", conn, params=(st.session_state.usuario_atual,))
+    st.dataframe(df_my_tools_hist, use_container_width=True, hide_index=True)
+
+with abas[6]:
     st.subheader("Service Checkouts (Usage on Vessel)")
     busca_out = st.text_input("Filter checkouts by vessel, WO, technician, part, P/N, warehouse or system...", key="search_out")
-    df_out = pd.read_sql_query("SELECT data_hora AS 'Date/Time', usuario AS 'Technician', estoque_origem AS 'Warehouse', spare_part AS 'Spare Part', part_number AS 'Part Number', numero_serie AS 'Serial Number', quantidade AS 'Qty', system AS 'System', navio AS 'Vessel', work_order AS 'Work Order' FROM historico WHERE tipo_movimento = 'OUT (SERVICE)' ORDER BY id DESC", conn)
+    df_out = pd.read_sql_query("SELECT data_hora AS 'Date/Time', usuario AS 'Technician', estoque_origem AS 'Warehouse', spare_part AS 'Spare Part', part_number AS 'Part Number', numero_serie AS 'Serial Number', quantidade AS 'Qty', system AS 'System', navio AS 'Vessel', work_order AS 'Work Order' FROM historico WHERE tipo_movimento LIKE 'OUT (SERVICE)%' OR tipo_movimento LIKE 'DIRECT TO VESSEL%' ORDER BY id DESC", conn)
     if busca_out:
         bo_lower = busca_out.lower()
         f_out = (
@@ -597,7 +709,7 @@ with abas[4]:
         df_out = df_out[f_out]
     st.dataframe(df_out, use_container_width=True, hide_index=True)
 
-with abas[5]:
+with abas[7]:
     st.subheader("Full Usage History")
     busca_hist = st.text_input("Filter full history by vessel, WO, technician, part, P/N, warehouse or system...", key="search_full")
     df_hist = pd.read_sql_query("SELECT data_hora AS 'Date/Time', usuario AS 'Technician', tipo_movimento AS 'Movement', estoque_origem AS 'Warehouse', spare_part AS 'Spare Part', part_number AS 'Part Number', numero_serie AS 'Serial Number', quantidade AS 'Qty', system AS 'System', navio AS 'Vessel', work_order AS 'Work Order' FROM historico ORDER BY id DESC", conn)
@@ -615,7 +727,7 @@ with abas[5]:
         df_hist = df_hist[f_hist]
     st.dataframe(df_hist, use_container_width=True, hide_index=True)
 
-with abas[6]:
+with abas[8]:
     st.subheader("Account Settings")
     c = conn.cursor()
     c.execute("SELECT nome_completo, email FROM usuarios WHERE username = ?", (st.session_state.usuario_atual,))
@@ -659,7 +771,7 @@ with abas[6]:
                     st.success("Password changed successfully!")
 
 if st.session_state.perfil_atual == "ADMIN":
-    with abas[7]:
+    with abas[9]:
         st.subheader("Administrator Panel - User Management")
         c_adm = conn.cursor()
         c_adm.execute("SELECT id, username, nome_completo, email, perfil, status, data_cadastro, pedido_reset FROM usuarios ORDER BY status DESC, pedido_reset DESC, id ASC")
@@ -694,6 +806,14 @@ if st.session_state.perfil_atual == "ADMIN":
                             st.success(f"Password reset for {u_row[1]}!")
                             st.rerun()
                             
+        st.markdown("---")
+        st.markdown("### Global Tools Management (All Technicians)")
+        df_all_tools = pd.read_sql_query("SELECT f.id AS 'ID', u.nome_completo AS 'Technician', f.ferramenta AS 'Tool Name', f.identificacao AS 'Identification', f.data_retirada AS 'Date Assigned', f.status AS 'Status' FROM ferramentas f JOIN usuarios u ON f.usuario = u.username ORDER BY f.status DESC, f.data_retirada DESC", conn)
+        if df_all_tools.empty:
+            st.info("No tools currently assigned to any technicians.")
+        else:
+            st.dataframe(df_all_tools, use_container_width=True, hide_index=True)
+            
         st.markdown("---")
         st.markdown("### All Registered Users & Management")
         
