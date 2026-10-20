@@ -226,6 +226,8 @@ def iniciar_banco():
         c.execute("ALTER TABLE ferramentas ADD COLUMN part_number TEXT")
     if 'quantidade' not in colunas_ferramentas:
         c.execute("ALTER TABLE ferramentas ADD COLUMN quantidade INTEGER DEFAULT 1")
+    if 'observacao' not in colunas_ferramentas:
+        c.execute("ALTER TABLE ferramentas ADD COLUMN observacao TEXT DEFAULT ''")
     
     agora = datetime.now().strftime("%d/%m/%Y %H:%M")
     c.execute("SELECT COUNT(*) FROM usuarios WHERE perfil = 'ADMIN'")
@@ -528,7 +530,7 @@ with abas[2]:
     lista_navios = df_navios['nome_navio'].tolist() if not df_navios.empty else []
 
     if st.session_state.perfil_atual == "ADMIN":
-        col_v1, col_v2 = st.columns([1, 2])
+        col_v1, col_v2 = st.columns([1, 1])
         with col_v1:
             with st.form("form_novo_navio", clear_on_submit=True):
                 st.markdown("#### 1. Register New Vessel")
@@ -552,7 +554,32 @@ with abas[2]:
                             conn.commit()
                             st.success(f"Vessel '{novo_navio_nome.upper()}' registered successfully!")
                             st.rerun()
-        
+            
+            with st.form("form_remover_navio", clear_on_submit=True):
+                st.markdown("#### 3. Remove Vessel")
+                col_rm1, col_rm2 = st.columns([1, 2])
+                with col_rm1:
+                    v_rem_navio = st.selectbox("Select Vessel to Remove *", lista_navios if lista_navios else ["No vessels registered"])
+                with col_rm2:
+                    v_rem_motivo = st.text_input("Reason for Removal *", placeholder="Ex: Vessel sold, project ended...")
+                
+                btn_rem_navio = st.form_submit_button("🗑️ Remove Vessel", use_container_width=True)
+                if btn_rem_navio:
+                    if not lista_navios:
+                        st.error("No vessels available to remove.")
+                    elif not v_rem_motivo.strip():
+                        st.error("A reason is required to remove a vessel.")
+                    else:
+                        c = conn.cursor()
+                        c.execute("DELETE FROM navios WHERE nome_navio = ?", (v_rem_navio,))
+                        c.execute("DELETE FROM estoque_navios WHERE navio = ?", (v_rem_navio,))
+                        agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+                        c.execute("INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                  (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "DELETE (VESSEL)", "ALL ASSOCIATED PARTS REMOVED", "", "", 0, "N/A", "N/A", v_rem_navio, f"REMOVED: {v_rem_motivo.strip()}"))
+                        conn.commit()
+                        st.success(f"Vessel '{v_rem_navio}' and all its specific inventory were successfully removed!")
+                        st.rerun()
+
         with col_v2:
             with st.form("form_add_peca_navio", clear_on_submit=True):
                 st.markdown("#### 2. Register Part to a Vessel")
@@ -833,7 +860,11 @@ with abas[6]:
         with col_t1:
             t_nome = st.text_input("Tool Name / Description *", placeholder="Ex: Multimeter Fluke 115")
             t_id = st.text_input("Serial Number / Asset Tag (Optional)", placeholder="Ex: S/N 123456")
-            t_qtd = st.number_input("Quantity *", min_value=1, step=1, value=1)
+            col_tq1, col_tq2 = st.columns([1, 2])
+            with col_tq1:
+                t_qtd = st.number_input("Quantity *", min_value=0, step=1, value=1)
+            with col_tq2:
+                t_obs = st.text_input("Explanation (Required if Qty = 0)", placeholder="Why 0?")
         with col_t2:
             t_pn = st.text_input("Part Number (P/N) (Optional)", placeholder="Ex: 115-EUR")
             
@@ -847,11 +878,13 @@ with abas[6]:
         if btn_add_tool:
             if not t_nome.strip() or not t_sys.strip():
                 st.error("Tool Name and System are required.")
+            elif t_qtd == 0 and not t_obs.strip():
+                st.error("An explanation is required when assigning a tool with 0 quantity.")
             else:
                 c = conn.cursor()
                 agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-                c.execute("INSERT INTO ferramentas (ferramenta, part_number, identificacao, usuario, data_retirada, status, system, quantidade) VALUES (?, ?, ?, ?, ?, 'EM POSSE', ?, ?)",
-                          (t_nome.strip(), t_pn.strip() if t_pn else "", t_id.strip() if t_id else "", st.session_state.usuario_atual, agora, t_sys.strip(), int(t_qtd)))
+                c.execute("INSERT INTO ferramentas (ferramenta, part_number, identificacao, usuario, data_retirada, status, system, quantidade, observacao) VALUES (?, ?, ?, ?, ?, 'EM POSSE', ?, ?, ?)",
+                          (t_nome.strip(), t_pn.strip() if t_pn else "", t_id.strip() if t_id else "", st.session_state.usuario_atual, agora, t_sys.strip(), int(t_qtd), t_obs.strip()))
                 conn.commit()
                 st.success("Tool added to your cautela!")
                 st.rerun()
@@ -871,7 +904,7 @@ with abas[6]:
     user_selecionado_label = st.selectbox("Select Technician to View Tools:", list(dict_users.keys()), index=default_idx)
     user_selecionado = dict_users[user_selecionado_label]
     
-    df_my_tools = pd.read_sql_query("SELECT id AS 'ID', system AS 'System', ferramenta AS 'Tool Name', part_number AS 'Part Number', identificacao AS 'Identification', quantidade AS 'Qty', data_retirada AS 'Date Assigned', status AS 'Status' FROM ferramentas WHERE usuario = ? AND status = 'EM POSSE' ORDER BY system, ferramenta", conn, params=(user_selecionado,))
+    df_my_tools = pd.read_sql_query("SELECT id AS 'ID', system AS 'System', ferramenta AS 'Tool Name', part_number AS 'Part Number', identificacao AS 'Identification', quantidade AS 'Qty', observacao AS 'Observation', data_retirada AS 'Date Assigned', status AS 'Status' FROM ferramentas WHERE usuario = ? AND status = 'EM POSSE' ORDER BY system, ferramenta", conn, params=(user_selecionado,))
     
     if df_my_tools.empty:
         st.info(f"No tools currently assigned to {user_selecionado_label}.")
@@ -884,7 +917,7 @@ with abas[6]:
                 df_my_tools,
                 use_container_width=True,
                 hide_index=True,
-                disabled=["ID", "System", "Tool Name", "Part Number", "Identification", "Qty", "Date Assigned"],
+                disabled=["ID", "System", "Tool Name", "Part Number", "Identification", "Qty", "Observation", "Date Assigned"],
                 column_config={
                     "Status": st.column_config.SelectboxColumn("Status", options=["EM POSSE", "DEVOLVIDA"], required=True)
                 }
@@ -1023,7 +1056,7 @@ if st.session_state.perfil_atual == "ADMIN":
                             
         st.markdown("---")
         st.markdown("### Global Tools Management (All Technicians)")
-        df_all_tools = pd.read_sql_query("SELECT f.id AS 'ID', u.nome_completo AS 'Technician', f.system AS 'System', f.ferramenta AS 'Tool Name', f.part_number AS 'Part Number', f.identificacao AS 'Identification', f.quantidade AS 'Qty', f.data_retirada AS 'Date Assigned', f.status AS 'Status' FROM ferramentas f JOIN usuarios u ON f.usuario = u.username ORDER BY f.status DESC, f.system, f.data_retirada DESC", conn)
+        df_all_tools = pd.read_sql_query("SELECT f.id AS 'ID', u.nome_completo AS 'Technician', f.system AS 'System', f.ferramenta AS 'Tool Name', f.part_number AS 'Part Number', f.identificacao AS 'Identification', f.quantidade AS 'Qty', f.observacao AS 'Observation', f.data_retirada AS 'Date Assigned', f.status AS 'Status' FROM ferramentas f JOIN usuarios u ON f.usuario = u.username ORDER BY f.status DESC, f.system, f.data_retirada DESC", conn)
         if df_all_tools.empty:
             st.info("No tools currently assigned to any technicians.")
         else:
