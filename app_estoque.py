@@ -468,31 +468,50 @@ with abas[0]:
 
 with abas[1]:
     st.subheader("Warranty Parts")
-    st.info("Register parts dispatched under warranty directly to a vessel (Non-Inventory).")
-    with st.form("form_warranty_parts"):
-        col_w1, col_w2 = st.columns(2)
-        with col_w1:
-            w_sg = st.text_input("SG Number *", placeholder="Ex: SG-88992")
-            w_navio = st.text_input("Vessel Name *", placeholder="Ex: MV Atlantic")
-            w_spare = st.text_input("Spare Part Name *", placeholder="Ex: Smoke Detector")
-            w_sys = st.text_input("System *", placeholder="Ex: Fire Alarm")
-        with col_w2:
-            w_pn = st.text_input("Part Number (P/N)")
-            w_sn = st.text_input("Serial Number (S/N)")
-            w_qtd = st.number_input("Quantity *", min_value=1, step=1, value=1)
+    st.info("Register parts dispatched under warranty directly to a vessel (Non-Inventory). Start typing to autocomplete from existing records.")
+    
+    # Extraindo dados únicos para o Autocomplete (Dropdown inteligente)
+    df_navios_w = pd.read_sql_query("SELECT DISTINCT nome_navio FROM navios UNION SELECT DISTINCT navio FROM historico ORDER BY nome_navio", conn)
+    lista_navios_w = [v for v in df_navios_w['nome_navio'].tolist() if v]
+    
+    df_spares_w = pd.read_sql_query("SELECT DISTINCT spare_part FROM estoque UNION SELECT DISTINCT spare_part FROM estoque_navios ORDER BY spare_part", conn)
+    lista_spares_w = [s for s in df_spares_w['spare_part'].tolist() if s]
+    
+    df_sys_w = pd.read_sql_query("SELECT DISTINCT system FROM estoque UNION SELECT DISTINCT system FROM estoque_navios ORDER BY system", conn)
+    lista_sys_w = [sys for sys in df_sys_w['system'].tolist() if sys]
+    
+    opt_new = "➕ New / Manual Entry"
+    
+    col_w1, col_w2 = st.columns(2)
+    with col_w1:
+        w_sg = st.text_input("SG Number *", placeholder="Ex: SG-88992")
         
-        btn_warranty = st.form_submit_button("Record Warranty Dispatch", use_container_width=True)
-        if btn_warranty:
-            if not w_sg.strip() or not w_navio.strip() or not w_spare.strip() or not w_sys.strip():
-                st.error("Please fill in all required fields (*).")
-            else:
-                c = conn.cursor()
-                agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-                c.execute("INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                          (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "WARRANTY", w_spare.strip(), w_pn.strip(), w_sn.strip(), int(w_qtd), "NON-INVENTORY", w_sys.strip(), w_navio.strip(), w_sg.strip()))
-                conn.commit()
-                st.success(f"Warranty dispatch successfully recorded for vessel {w_navio}!")
-                st.rerun()
+        w_navio_sel = st.selectbox("Vessel Name *", [opt_new] + lista_navios_w, index=0)
+        w_navio = st.text_input("Type Vessel Name *", placeholder="Ex: MV Atlantic") if w_navio_sel == opt_new else w_navio_sel
+        
+        w_spare_sel = st.selectbox("Spare Part Name *", [opt_new] + lista_spares_w, index=0)
+        w_spare = st.text_input("Type Spare Part Name *", placeholder="Ex: Smoke Detector") if w_spare_sel == opt_new else w_spare_sel
+        
+        w_sys_sel = st.selectbox("System *", [opt_new] + lista_sys_w, index=0)
+        w_sys = st.text_input("Type System *", placeholder="Ex: Fire Alarm") if w_sys_sel == opt_new else w_sys_sel
+        
+    with col_w2:
+        w_pn = st.text_input("Part Number (P/N)")
+        w_sn = st.text_input("Serial Number (S/N)")
+        w_qtd = st.number_input("Quantity *", min_value=1, step=1, value=1)
+    
+    btn_warranty = st.button("Record Warranty Dispatch", use_container_width=True)
+    if btn_warranty:
+        if not w_sg.strip() or not w_navio.strip() or not w_spare.strip() or not w_sys.strip():
+            st.error("Please fill in all required fields (*).")
+        else:
+            c = conn.cursor()
+            agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+            c.execute("INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                      (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "WARRANTY", w_spare.strip(), w_pn.strip(), w_sn.strip(), int(w_qtd), "NON-INVENTORY", w_sys.strip(), w_navio.strip(), w_sg.strip()))
+            conn.commit()
+            st.success(f"Warranty dispatch successfully recorded for vessel {w_navio}!")
+            st.rerun()
 
 with abas[2]:
     st.subheader("Vessel-Specific Inventory")
@@ -559,11 +578,12 @@ with abas[2]:
                             st.rerun()
 
     st.markdown("---")
-    st.markdown("#### Vessel Inventory List")
+    st.markdown("### 🚢 Search & View Vessel Inventory")
     if not lista_navios:
         st.info("No vessels registered yet.")
     else:
-        filtro_navio = st.selectbox("View inventory for:", ["All Vessels"] + lista_navios)
+        # Dropdown proeminente para filtrar por Navio
+        filtro_navio = st.selectbox("🔍 Select a Vessel to filter the list below:", ["All Vessels"] + lista_navios)
         
         query_v = "SELECT id AS 'ID', navio AS 'Vessel', estoque_origem AS 'Warehouse', spare_part AS 'Spare Part', part_number AS 'Part Number', numero_serie AS 'Serial Number', quantidade AS 'Qty', system AS 'System' FROM estoque_navios"
         params_v = []
@@ -572,6 +592,7 @@ with abas[2]:
             params_v = [filtro_navio]
             
         df_v_estoque = pd.read_sql_query(query_v, conn, params=params_v)
+        st.caption(f"Showing {len(df_v_estoque)} item(s).")
         
         if st.session_state.perfil_atual == "ADMIN":
             st.markdown("💡 **Admin Mode:** Edit values directly in the table below.")
