@@ -201,6 +201,10 @@ def iniciar_banco():
                     pedido_reset INTEGER DEFAULT 0
                 )''')
                 
+    colunas_usuarios = [col[1] for col in c.execute("PRAGMA table_info(usuarios)").fetchall()]
+    if 'session_token' not in colunas_usuarios:
+        c.execute("ALTER TABLE usuarios ADD COLUMN session_token TEXT")
+                
     c.execute('''CREATE TABLE IF NOT EXISTS config_email (
                     id INTEGER PRIMARY KEY CHECK (id = 1),
                     smtp_server TEXT,
@@ -265,11 +269,24 @@ def enviar_email_recuperacao(email_destino, nome_usuario, nova_senha):
     except Exception as e:
         return False, str(e)
 
+# Gerenciamento de Sessão via URL Params
 if "logado" not in st.session_state:
     st.session_state.logado = False
     st.session_state.usuario_atual = ""
     st.session_state.nome_atual = ""
     st.session_state.perfil_atual = ""
+    
+    # Auto-login via Token se a página for atualizada (F5)
+    if "session" in st.query_params:
+        token = st.query_params["session"]
+        c = conn.cursor()
+        c.execute("SELECT username, nome_completo, perfil FROM usuarios WHERE session_token = ? AND status = 'APROVADO'", (token,))
+        user_sess = c.fetchone()
+        if user_sess:
+            st.session_state.logado = True
+            st.session_state.usuario_atual = user_sess[0]
+            st.session_state.nome_atual = user_sess[1]
+            st.session_state.perfil_atual = user_sess[2]
 
 if not st.session_state.logado:
     st.markdown("""
@@ -309,6 +326,12 @@ if not st.session_state.logado:
                     elif user_row[4] == "BLOQUEADO":
                         st.error("Account deactivated.")
                     else:
+                        # Gerar token e salvar para evitar deslogar no F5
+                        token = secrets.token_hex(16)
+                        c.execute("UPDATE usuarios SET session_token = ? WHERE username = ?", (token, user_row[0]))
+                        conn.commit()
+                        st.query_params["session"] = token
+                        
                         st.session_state.logado = True
                         st.session_state.usuario_atual = user_row[0]
                         st.session_state.nome_atual = user_row[1]
@@ -390,6 +413,13 @@ with col_h2:
     if os.path.exists("logo.png"):
         st.image("logo.png", width=110)
     if st.button("Sign Out", use_container_width=True):
+        # Limpar o token no banco e na URL
+        c = conn.cursor()
+        c.execute("UPDATE usuarios SET session_token = NULL WHERE username = ?", (st.session_state.usuario_atual,))
+        conn.commit()
+        if "session" in st.query_params:
+            del st.query_params["session"]
+            
         st.session_state.logado = False
         st.rerun()
 
@@ -401,19 +431,18 @@ if st.session_state.perfil_atual == "ADMIN":
         st.warning(f"Attention Administrator: There are {pendencias} pending request(s) in the Admin Panel tab.")
 
 df_est_total = pd.read_sql_query("SELECT * FROM estoque", conn)
-df_hist_total = pd.read_sql_query("SELECT * FROM historico WHERE tipo_movimento = 'OUT (SERVICE)' OR tipo_movimento = 'WARRANTY'", conn)
+df_hist_total = pd.read_sql_query("SELECT * FROM historico WHERE tipo_movimento = 'OUT (SERVICE)'", conn)
 
 k1, k2, k3, k4 = st.columns(4)
 k1.metric("Registered Models (Main)", len(df_est_total))
 k2.metric("Available Parts (Main)", int(df_est_total['quantidade'].sum()) if not df_est_total.empty else 0)
 k3.metric("Zeroed Parts (Main)", len(df_est_total[df_est_total['quantidade'] == 0]) if not df_est_total.empty else 0)
-k4.metric("Total Dispatches", len(df_hist_total))
+k4.metric("Total Service Dispatches", len(df_hist_total))
 
 st.write("")
 
 lista_abas = [
     "Checkout Parts", 
-    "Warranty Parts",
     "Vessels Inventory", 
     "Check Inventory", 
     "Register Part", 
@@ -477,117 +506,76 @@ with abas[0]:
                     st.rerun()
 
 with abas[1]:
-    st.subheader("Warranty Parts")
-    st.info("Register parts dispatched under warranty directly to a vessel (Non-Inventory). Start typing to autocomplete from existing records.")
-    
-    df_navios_w = pd.read_sql_query("SELECT DISTINCT nome_navio FROM navios UNION SELECT DISTINCT navio FROM historico ORDER BY nome_navio", conn)
-    lista_navios_w = [v for v in df_navios_w['nome_navio'].tolist() if v]
-    
-    df_spares_w = pd.read_sql_query("SELECT DISTINCT spare_part FROM estoque UNION SELECT DISTINCT spare_part FROM estoque_navios ORDER BY spare_part", conn)
-    lista_spares_w = [s for s in df_spares_w['spare_part'].tolist() if s]
-    
-    df_sys_w = pd.read_sql_query("SELECT DISTINCT system FROM estoque UNION SELECT DISTINCT system FROM estoque_navios ORDER BY system", conn)
-    lista_sys_w = [sys for sys in df_sys_w['system'].tolist() if sys]
-    
-    opt_new = "➕ New / Manual Entry"
-    
-    col_w1, col_w2 = st.columns(2)
-    with col_w1:
-        w_sg = st.text_input("SG Number *", placeholder="Ex: SG-88992")
-        
-        w_navio_sel = st.selectbox("Vessel Name *", [opt_new] + lista_navios_w, index=0)
-        w_navio = st.text_input("Type Vessel Name *", placeholder="Ex: MV Atlantic") if w_navio_sel == opt_new else w_navio_sel
-        
-        w_spare_sel = st.selectbox("Spare Part Name *", [opt_new] + lista_spares_w, index=0)
-        w_spare = st.text_input("Type Spare Part Name *", placeholder="Ex: Smoke Detector") if w_spare_sel == opt_new else w_spare_sel
-        
-        w_sys_sel = st.selectbox("System *", [opt_new] + lista_sys_w, index=0)
-        w_sys = st.text_input("Type System *", placeholder="Ex: Fire Alarm") if w_sys_sel == opt_new else w_sys_sel
-        
-    with col_w2:
-        w_pn = st.text_input("Part Number (P/N)")
-        w_sn = st.text_input("Serial Number (S/N)")
-        w_qtd = st.number_input("Quantity *", min_value=1, step=1, value=1)
-    
-    btn_warranty = st.button("Record Warranty Dispatch", use_container_width=True)
-    if btn_warranty:
-        if not w_sg.strip() or not w_navio.strip() or not w_spare.strip() or not w_sys.strip():
-            st.error("Please fill in all required fields (*).")
-        else:
-            c = conn.cursor()
-            agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-            c.execute("INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                      (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "WARRANTY", w_spare.strip(), w_pn.strip(), w_sn.strip(), int(w_qtd), "NON-INVENTORY", w_sys.strip(), w_navio.strip(), w_sg.strip()))
-            conn.commit()
-            st.success(f"Warranty dispatch successfully recorded for vessel {w_navio}!")
-            st.rerun()
-
-with abas[2]:
     st.subheader("Vessel-Specific Inventory")
     st.info("Manage dedicated spare parts assigned exclusively to specific vessels (Independent from Main Warehouse).")
     
+    if st.session_state.perfil_atual == "ADMIN":
+        with st.expander("➕ Register or Remove Vessel"):
+            col_v1, col_v2 = st.columns([1, 1])
+            with col_v1:
+                with st.form("form_novo_navio", clear_on_submit=True):
+                    st.markdown("#### Register New Vessel")
+                    novo_navio_nome = st.text_input("Vessel Name *", placeholder="Ex: MV Atlantic")
+                    novo_sg_number = st.text_input("SG Number *", placeholder="Ex: SG-12345")
+                    
+                    btn_novo_navio = st.form_submit_button("Save Vessel", use_container_width=True)
+                    if btn_novo_navio:
+                        if not novo_navio_nome.strip() or not novo_sg_number.strip():
+                            st.error("Vessel Name and SG Number are required.")
+                        else:
+                            c = conn.cursor()
+                            c.execute("SELECT nome_navio, sg_number FROM navios WHERE UPPER(nome_navio) = ? OR UPPER(sg_number) = ?", 
+                                      (novo_navio_nome.strip().upper(), novo_sg_number.strip().upper()))
+                            duplicata = c.fetchone()
+                            
+                            if duplicata:
+                                st.error(f"⚠️ Error: A vessel is already registered with the Name '{duplicata[0]}' or SG Number '{duplicata[1]}'. Duplicates are not allowed.")
+                            else:
+                                c.execute("INSERT INTO navios (nome_navio, sg_number) VALUES (?, ?)", (novo_navio_nome.strip().upper(), novo_sg_number.strip().upper()))
+                                conn.commit()
+                                st.success(f"Vessel '{novo_navio_nome.upper()}' registered successfully!")
+                                st.rerun()
+            
+            with col_v2:
+                with st.form("form_remover_navio", clear_on_submit=True):
+                    st.markdown("#### Remove Vessel")
+                    df_nav_rem = pd.read_sql_query("SELECT nome_navio FROM navios ORDER BY nome_navio", conn)
+                    lista_nav_rem = df_nav_rem['nome_navio'].tolist() if not df_nav_rem.empty else []
+                    
+                    v_rem_navio = st.selectbox("Select Vessel to Remove *", lista_nav_rem if lista_nav_rem else ["No vessels registered"])
+                    v_rem_motivo = st.text_input("Reason for Removal *", placeholder="Ex: Vessel sold, project ended...")
+                    
+                    btn_rem_navio = st.form_submit_button("🗑️ Remove Vessel", use_container_width=True)
+                    if btn_rem_navio:
+                        if not lista_nav_rem:
+                            st.error("No vessels available to remove.")
+                        elif not v_rem_motivo.strip():
+                            st.error("A reason is required to remove a vessel.")
+                        else:
+                            c = conn.cursor()
+                            c.execute("DELETE FROM navios WHERE nome_navio = ?", (v_rem_navio,))
+                            c.execute("DELETE FROM estoque_navios WHERE navio = ?", (v_rem_navio,))
+                            agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+                            c.execute("INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                      (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "DELETE (VESSEL)", "ALL ASSOCIATED PARTS REMOVED", "", "", 0, "N/A", "N/A", v_rem_navio, f"REMOVED: {v_rem_motivo.strip()}"))
+                            conn.commit()
+                            st.success(f"Vessel '{v_rem_navio}' and all its specific inventory were successfully removed!")
+                            st.rerun()
+
+    st.markdown("---")
+    
     df_navios = pd.read_sql_query("SELECT nome_navio FROM navios ORDER BY nome_navio", conn)
     lista_navios = df_navios['nome_navio'].tolist() if not df_navios.empty else []
-
-    if st.session_state.perfil_atual == "ADMIN":
-        col_v1, col_v2 = st.columns([1, 1])
-        with col_v1:
-            with st.form("form_novo_navio", clear_on_submit=True):
-                st.markdown("#### 1. Register New Vessel")
-                novo_navio_nome = st.text_input("Vessel Name *", placeholder="Ex: MV Atlantic")
-                novo_sg_number = st.text_input("SG Number *", placeholder="Ex: SG-12345")
-                
-                btn_novo_navio = st.form_submit_button("Save Vessel", use_container_width=True)
-                if btn_novo_navio:
-                    if not novo_navio_nome.strip() or not novo_sg_number.strip():
-                        st.error("Vessel Name and SG Number are required.")
-                    else:
-                        c = conn.cursor()
-                        c.execute("SELECT nome_navio, sg_number FROM navios WHERE UPPER(nome_navio) = ? OR UPPER(sg_number) = ?", 
-                                  (novo_navio_nome.strip().upper(), novo_sg_number.strip().upper()))
-                        duplicata = c.fetchone()
-                        
-                        if duplicata:
-                            st.error(f"⚠️ Error: A vessel is already registered with the Name '{duplicata[0]}' or SG Number '{duplicata[1]}'. Duplicates are not allowed.")
-                        else:
-                            c.execute("INSERT INTO navios (nome_navio, sg_number) VALUES (?, ?)", (novo_navio_nome.strip().upper(), novo_sg_number.strip().upper()))
-                            conn.commit()
-                            st.success(f"Vessel '{novo_navio_nome.upper()}' registered successfully!")
-                            st.rerun()
-            
-            with st.form("form_remover_navio", clear_on_submit=True):
-                st.markdown("#### 3. Remove Vessel")
-                col_rm1, col_rm2 = st.columns([1, 2])
-                with col_rm1:
-                    v_rem_navio = st.selectbox("Select Vessel to Remove *", lista_navios if lista_navios else ["No vessels registered"])
-                with col_rm2:
-                    v_rem_motivo = st.text_input("Reason for Removal *", placeholder="Ex: Vessel sold, project ended...")
-                
-                btn_rem_navio = st.form_submit_button("🗑️ Remove Vessel", use_container_width=True)
-                if btn_rem_navio:
-                    if not lista_navios:
-                        st.error("No vessels available to remove.")
-                    elif not v_rem_motivo.strip():
-                        st.error("A reason is required to remove a vessel.")
-                    else:
-                        c = conn.cursor()
-                        c.execute("DELETE FROM navios WHERE nome_navio = ?", (v_rem_navio,))
-                        c.execute("DELETE FROM estoque_navios WHERE navio = ?", (v_rem_navio,))
-                        agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-                        c.execute("INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                  (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "DELETE (VESSEL)", "ALL ASSOCIATED PARTS REMOVED", "", "", 0, "N/A", "N/A", v_rem_navio, f"REMOVED: {v_rem_motivo.strip()}"))
-                        conn.commit()
-                        st.success(f"Vessel '{v_rem_navio}' and all its specific inventory were successfully removed!")
-                        st.rerun()
-
-        with col_v2:
-            with st.form("form_add_peca_navio", clear_on_submit=True):
-                st.markdown("#### 2. Register Part to a Vessel")
-                if not lista_navios:
-                    st.warning("Please register a vessel first.")
-                    st.form_submit_button("Add Part to Vessel", disabled=True)
-                else:
-                    v_navio = st.selectbox("Select Vessel *", lista_navios)
+    
+    if not lista_navios:
+        st.info("No vessels registered yet.")
+    else:
+        filtro_navio = st.selectbox("🔍 Select a Vessel to view its inventory or add new parts:", ["All Vessels"] + lista_navios)
+        
+        # Se um navio específico for selecionado, mostrar a opção de adicionar peças para ele
+        if filtro_navio != "All Vessels" and st.session_state.perfil_atual == "ADMIN":
+            with st.expander(f"📦 Register New Part to '{filtro_navio}'", expanded=False):
+                with st.form("form_add_peca_navio", clear_on_submit=True):
                     col_p1, col_p2 = st.columns(2)
                     with col_p1:
                         v_spare = st.text_input("Spare Part Name *")
@@ -598,7 +586,7 @@ with abas[2]:
                         v_qtd = st.number_input("Quantity *", min_value=1, step=1, value=1)
                         v_wh = st.selectbox("Warehouse *", ["Santa Catarina", "Duci", "Diego"])
                     
-                    btn_v_peca = st.form_submit_button("Add Part to Vessel", use_container_width=True)
+                    btn_v_peca = st.form_submit_button(f"Save Part to {filtro_navio}", use_container_width=True)
                     if btn_v_peca:
                         if not v_spare.strip() or not v_sys.strip():
                             st.error("Spare Part and System are required.")
@@ -608,22 +596,16 @@ with abas[2]:
                             val_sn = v_sn.strip() if v_sn else ""
                             
                             c.execute("INSERT INTO estoque_navios (navio, spare_part, part_number, numero_serie, quantidade, estoque_origem, system) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                                      (v_navio, v_spare.strip(), val_pn, val_sn, int(v_qtd), v_wh, v_sys.strip()))
+                                      (filtro_navio, v_spare.strip(), val_pn, val_sn, int(v_qtd), v_wh, v_sys.strip()))
                             
                             agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
                             c.execute("INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                      (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "IN (VESSEL STOCK)", v_spare.strip(), val_pn, val_sn, int(v_qtd), v_wh, v_sys.strip(), v_navio, "REGISTER"))
+                                      (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "IN (VESSEL STOCK)", v_spare.strip(), val_pn, val_sn, int(v_qtd), v_wh, v_sys.strip(), filtro_navio, "REGISTER"))
                             conn.commit()
-                            st.success("Part successfully registered directly to the vessel!")
+                            st.success(f"Part successfully registered directly to {filtro_navio}!")
                             st.rerun()
 
-    st.markdown("---")
-    st.markdown("### 🚢 Search & View Vessel Inventory")
-    if not lista_navios:
-        st.info("No vessels registered yet.")
-    else:
-        filtro_navio = st.selectbox("🔍 Select a Vessel to filter the list below:", ["All Vessels"] + lista_navios)
-        
+        # Mostra a tabela filtrada
         query_v = "SELECT id AS 'ID', navio AS 'Vessel', estoque_origem AS 'Warehouse', spare_part AS 'Spare Part', part_number AS 'Part Number', numero_serie AS 'Serial Number', quantidade AS 'Qty', system AS 'System' FROM estoque_navios"
         params_v = []
         if filtro_navio != "All Vessels":
@@ -631,11 +613,9 @@ with abas[2]:
             params_v = [filtro_navio]
             
         df_v_estoque = pd.read_sql_query(query_v, conn, params=params_v)
-        st.caption(f"Showing {len(df_v_estoque)} item(s).")
+        st.caption(f"Showing {len(df_v_estoque)} item(s) for {filtro_navio}.")
         
         if st.session_state.perfil_atual == "ADMIN":
-            st.markdown("💡 **Admin Mode:** Edit values directly in the table below.")
-            
             edited_v_df = st.data_editor(
                 df_v_estoque,
                 use_container_width=True,
@@ -687,7 +667,7 @@ with abas[2]:
         else:
             st.dataframe(df_v_estoque, use_container_width=True, hide_index=True)
 
-with abas[3]:
+with abas[2]:
     st.subheader("Main Inventory Lookup & Edit")
     df_estoque = pd.read_sql_query("SELECT id AS 'ID', estoque_origem AS 'Warehouse', spare_part AS 'Spare Part', part_number AS 'Part Number', numero_serie AS 'Serial Number', quantidade AS 'Current Qty', system AS 'System' FROM estoque", conn)
     
@@ -768,10 +748,58 @@ with abas[3]:
                         conn.commit()
                         st.success("All changes saved successfully!")
                         st.rerun()
+                        
+        st.markdown("---")
+        with st.expander("🗑️ Remove Part from Main Inventory"):
+            with st.form("form_remover_peca_main", clear_on_submit=True):
+                col_rm1, col_rm2 = st.columns([1, 2])
+                with col_rm1:
+                    df_all_main = pd.read_sql_query("SELECT * FROM estoque", conn)
+                    if df_all_main.empty:
+                        st.info("No parts available to remove.")
+                        opcoes_rem_main = {}
+                    else:
+                        opcoes_rem_main = {}
+                        for _, row in df_all_main.iterrows():
+                            pn_text = f" | P/N: {row['part_number']}" if row['part_number'] else ""
+                            sn_text = f" | S/N: {row['numero_serie']}" if row['numero_serie'] else ""
+                            label = f"[{row['estoque_origem']}] {row['spare_part']}{pn_text}{sn_text} | Sys: {row['system']} (Qty: {row['quantidade']})"
+                            opcoes_rem_main[label] = row['id']
+                    
+                    p_rem_label = st.selectbox("Select Part to Remove *", list(opcoes_rem_main.keys()) if opcoes_rem_main else ["No parts available"])
+                with col_rm2:
+                    p_rem_motivo = st.text_input("Reason for Removal *", placeholder="Ex: Item discontinued, duplicated entry, lost...")
+                
+                btn_rem_peca = st.form_submit_button("🗑️ Remove Part", use_container_width=True)
+                if btn_rem_peca:
+                    if not opcoes_rem_main:
+                        st.error("No parts available to remove.")
+                    elif not p_rem_motivo.strip():
+                        st.error("A reason is required to remove a part.")
+                    else:
+                        id_p_rem = opcoes_rem_main[p_rem_label]
+                        c = conn.cursor()
+                        
+                        c.execute("SELECT spare_part, part_number, numero_serie, estoque_origem, system, quantidade FROM estoque WHERE id = ?", (id_p_rem,))
+                        part_info = c.fetchone()
+                        
+                        if part_info:
+                            v_sp, v_pn, v_sn, v_wh, v_sys, v_qtd = part_info
+                            
+                            c.execute("DELETE FROM estoque WHERE id = ?", (id_p_rem,))
+                            agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+                            
+                            obs_mov = f"REMOVED: {p_rem_motivo.strip()}"
+                            c.execute("INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                      (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "DELETE (MAIN STOCK)", v_sp, v_pn, v_sn, v_qtd, v_wh, v_sys, "MAIN INVENTORY", obs_mov))
+                            conn.commit()
+                            st.success(f"Part '{v_sp}' was successfully removed!")
+                            st.rerun()
+
     else:
         st.dataframe(styled_df_estoque, use_container_width=True, hide_index=True)
 
-with abas[4]:
+with abas[3]:
     st.subheader("Register New Item to Inventory")
     if st.session_state.perfil_atual != "ADMIN":
         st.error("🚫 Access Denied: Only Administrators can register new parts into inventory.")
@@ -799,13 +827,13 @@ with abas[4]:
                     c.execute("INSERT INTO estoque (spare_part, part_number, numero_serie, quantidade, estoque_origem, system, localizacao) VALUES (?, ?, ?, ?, ?, ?, ?)",
                               (novo_spare.strip(), val_pn, val_sn, int(nova_qtd), estoque_escolhido, novo_system.strip(), novo_system.strip()))
                     agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-                    sql_hist_in = "INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    sql_hist_in = "INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     c.execute(sql_hist_in, (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "IN (REGISTRATION)", novo_spare.strip(), val_pn, val_sn, int(nova_qtd), estoque_escolhido, novo_system.strip(), "-", "-"))
                     conn.commit()
                     st.success(f"Part registered successfully in warehouse '{estoque_escolhido}'!")
                     st.rerun()
 
-with abas[5]:
+with abas[4]:
     st.subheader("Add / Restock Existing Parts")
     if st.session_state.perfil_atual != "ADMIN":
         st.error("🚫 Access Denied: Only Administrators can restock inventory.")
@@ -846,7 +874,7 @@ with abas[5]:
                     st.success(f"Successfully added {qtd_adicional} unit(s) to '{dados_rep['spare_part']}'. New total: {nova_qtd_total}")
                     st.rerun()
 
-with abas[6]:
+with abas[5]:
     st.subheader("Tools (Cautela)")
     
     with st.form("form_add_tool"):
@@ -939,10 +967,10 @@ with abas[6]:
         else:
             st.dataframe(df_my_tools, use_container_width=True, hide_index=True)
 
-with abas[7]:
+with abas[6]:
     st.subheader("Service Checkouts (Usage on Vessel)")
     busca_out = st.text_input("Filter checkouts by vessel, SG/WO, technician, part, P/N, warehouse or system...", key="search_out")
-    df_out = pd.read_sql_query("SELECT data_hora AS 'Date/Time', usuario AS 'Technician', estoque_origem AS 'Warehouse', spare_part AS 'Spare Part', part_number AS 'Part Number', numero_serie AS 'Serial Number', quantidade AS 'Qty', system AS 'System', navio AS 'Vessel', work_order AS 'SG / WO' FROM historico WHERE tipo_movimento LIKE 'OUT (SERVICE)%' OR tipo_movimento = 'WARRANTY' ORDER BY id DESC", conn)
+    df_out = pd.read_sql_query("SELECT data_hora AS 'Date/Time', usuario AS 'Technician', estoque_origem AS 'Warehouse', spare_part AS 'Spare Part', part_number AS 'Part Number', numero_serie AS 'Serial Number', quantidade AS 'Qty', system AS 'System', navio AS 'Vessel', work_order AS 'SG / WO' FROM historico WHERE tipo_movimento LIKE 'OUT (SERVICE)%' ORDER BY id DESC", conn)
     if busca_out:
         bo_lower = busca_out.lower()
         f_out = (
@@ -957,7 +985,7 @@ with abas[7]:
         df_out = df_out[f_out]
     st.dataframe(df_out, use_container_width=True, hide_index=True)
 
-with abas[8]:
+with abas[7]:
     st.subheader("Full Usage History")
     busca_hist = st.text_input("Filter full history by vessel, SG/WO, technician, part, P/N, warehouse or system...", key="search_full")
     df_hist = pd.read_sql_query("SELECT data_hora AS 'Date/Time', usuario AS 'Technician', tipo_movimento AS 'Movement', estoque_origem AS 'Warehouse', spare_part AS 'Spare Part', part_number AS 'Part Number', numero_serie AS 'Serial Number', quantidade AS 'Qty', system AS 'System', navio AS 'Vessel', work_order AS 'SG / WO' FROM historico ORDER BY id DESC", conn)
@@ -975,7 +1003,7 @@ with abas[8]:
         df_hist = df_hist[f_hist]
     st.dataframe(df_hist, use_container_width=True, hide_index=True)
 
-with abas[9]:
+with abas[8]:
     st.subheader("Account Settings")
     c = conn.cursor()
     c.execute("SELECT nome_completo, email FROM usuarios WHERE username = ?", (st.session_state.usuario_atual,))
@@ -1019,7 +1047,7 @@ with abas[9]:
                     st.success("Password changed successfully!")
 
 if st.session_state.perfil_atual == "ADMIN":
-    with abas[10]:
+    with abas[9]:
         st.subheader("Administrator Panel - User Management")
         c_adm = conn.cursor()
         c_adm.execute("SELECT id, username, nome_completo, email, perfil, status, data_cadastro, pedido_reset FROM usuarios ORDER BY status DESC, pedido_reset DESC, id ASC")
