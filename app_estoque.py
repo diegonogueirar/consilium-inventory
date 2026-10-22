@@ -1,5 +1,4 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
 from datetime import datetime
 import os
@@ -8,6 +7,7 @@ import hashlib
 import secrets
 import smtplib
 from email.mime.text import MIMEText
+import libsql_experimental as libsql
 
 st.set_page_config(page_title="Consilium | Inventory Control", page_icon="🚢", layout="wide")
 
@@ -125,8 +125,17 @@ def aplicar_estilo_consilium():
 
 aplicar_estilo_consilium()
 
+# Conexão com o banco na nuvem Turso
+@st.cache_resource
 def iniciar_banco():
-    conn = sqlite3.connect("estoque_empresa.db", check_same_thread=False)
+    try:
+        url = st.secrets["TURSO_DATABASE_URL"]
+        token = st.secrets["TURSO_AUTH_TOKEN"]
+    except KeyError:
+        st.error("Erro: As credenciais do Turso não foram encontradas no Secrets do Streamlit.")
+        st.stop()
+        
+    conn = libsql.connect(url, auth_token=token)
     c = conn.cursor()
     
     c.execute('''CREATE TABLE IF NOT EXISTS estoque (
@@ -134,25 +143,17 @@ def iniciar_banco():
                     spare_part TEXT NOT NULL,
                     numero_serie TEXT,
                     quantidade INTEGER NOT NULL,
-                    localizacao TEXT NOT NULL
+                    localizacao TEXT NOT NULL,
+                    part_number TEXT,
+                    estoque_origem TEXT DEFAULT 'Santa Catarina',
+                    system TEXT DEFAULT 'General'
                 )''')
-    
-    colunas_estoque = [col[1] for col in c.execute("PRAGMA table_info(estoque)").fetchall()]
-    if 'part_number' not in colunas_estoque:
-        c.execute("ALTER TABLE estoque ADD COLUMN part_number TEXT")
-    if 'estoque_origem' not in colunas_estoque:
-        c.execute("ALTER TABLE estoque ADD COLUMN estoque_origem TEXT DEFAULT 'Santa Catarina'")
-    if 'system' not in colunas_estoque:
-        c.execute("ALTER TABLE estoque ADD COLUMN system TEXT DEFAULT 'General'")
 
     c.execute('''CREATE TABLE IF NOT EXISTS navios (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    nome_navio TEXT UNIQUE NOT NULL
+                    nome_navio TEXT UNIQUE NOT NULL,
+                    sg_number TEXT
                 )''')
-                
-    colunas_navios = [col[1] for col in c.execute("PRAGMA table_info(navios)").fetchall()]
-    if 'sg_number' not in colunas_navios:
-        c.execute("ALTER TABLE navios ADD COLUMN sg_number TEXT")
 
     c.execute('''CREATE TABLE IF NOT EXISTS estoque_navios (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -174,16 +175,11 @@ def iniciar_banco():
                     numero_serie TEXT,
                     quantidade INTEGER NOT NULL,
                     navio TEXT,
-                    work_order TEXT
+                    work_order TEXT,
+                    part_number TEXT,
+                    estoque_origem TEXT,
+                    system TEXT
                 )''')
-    
-    colunas_hist = [col[1] for col in c.execute("PRAGMA table_info(historico)").fetchall()]
-    if 'part_number' not in colunas_hist:
-        c.execute("ALTER TABLE historico ADD COLUMN part_number TEXT")
-    if 'estoque_origem' not in colunas_hist:
-        c.execute("ALTER TABLE historico ADD COLUMN estoque_origem TEXT")
-    if 'system' not in colunas_hist:
-        c.execute("ALTER TABLE historico ADD COLUMN system TEXT")
 
     c.execute('''CREATE TABLE IF NOT EXISTS usuarios (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -194,15 +190,12 @@ def iniciar_banco():
                     perfil TEXT NOT NULL DEFAULT 'TECNICO',
                     status TEXT NOT NULL DEFAULT 'PENDENTE',
                     data_cadastro TEXT NOT NULL,
-                    pedido_reset INTEGER DEFAULT 0
+                    pedido_reset INTEGER DEFAULT 0,
+                    session_token TEXT
                 )''')
                 
-    colunas_usuarios = [col[1] for col in c.execute("PRAGMA table_info(usuarios)").fetchall()]
-    if 'session_token' not in colunas_usuarios:
-        c.execute("ALTER TABLE usuarios ADD COLUMN session_token TEXT")
-                
     c.execute('''CREATE TABLE IF NOT EXISTS config_email (
-                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    id INTEGER PRIMARY KEY,
                     smtp_server TEXT,
                     smtp_port INTEGER,
                     email_remetente TEXT,
@@ -215,29 +208,34 @@ def iniciar_banco():
                     identificacao TEXT,
                     usuario TEXT NOT NULL,
                     data_retirada TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'EM POSSE'
+                    status TEXT NOT NULL DEFAULT 'EM POSSE',
+                    system TEXT DEFAULT 'General',
+                    part_number TEXT,
+                    quantidade INTEGER DEFAULT 1,
+                    observacao TEXT DEFAULT ''
                 )''')
-                
-    colunas_ferramentas = [col[1] for col in c.execute("PRAGMA table_info(ferramentas)").fetchall()]
-    if 'system' not in colunas_ferramentas:
-        c.execute("ALTER TABLE ferramentas ADD COLUMN system TEXT DEFAULT 'General'")
-    if 'part_number' not in colunas_ferramentas:
-        c.execute("ALTER TABLE ferramentas ADD COLUMN part_number TEXT")
-    if 'quantidade' not in colunas_ferramentas:
-        c.execute("ALTER TABLE ferramentas ADD COLUMN quantidade INTEGER DEFAULT 1")
-    if 'observacao' not in colunas_ferramentas:
-        c.execute("ALTER TABLE ferramentas ADD COLUMN observacao TEXT DEFAULT ''")
     
     agora = datetime.now().strftime("%d/%m/%Y %H:%M")
     c.execute("SELECT COUNT(*) FROM usuarios WHERE perfil = 'ADMIN'")
     if c.fetchone()[0] == 0:
-        c.execute("INSERT OR IGNORE INTO usuarios (username, nome_completo, email, senha_hash, perfil, status, data_cadastro) VALUES (?, ?, ?, ?, 'ADMIN', 'APROVADO', ?)",
-                  ('admin', 'General Administrator', 'admin@consilium.com', hash_senha('1234'), agora))
+        try:
+            c.execute("INSERT INTO usuarios (username, nome_completo, email, senha_hash, perfil, status, data_cadastro) VALUES (?, ?, ?, ?, 'ADMIN', 'APROVADO', ?)",
+                      ('admin', 'General Administrator', 'admin@consilium.com', hash_senha('1234'), agora))
+        except Exception:
+            pass
     
     conn.commit()
     return conn
 
 conn = iniciar_banco()
+
+# Função auxiliar para ler dados do Turso para o Pandas com segurança
+def ler_banco(query, params=()):
+    c = conn.cursor()
+    c.execute(query, params)
+    rows = c.fetchall()
+    cols = [desc[0] for desc in c.description] if c.description else []
+    return pd.DataFrame(rows, columns=cols)
 
 def limpar_dado(valor):
     if pd.isna(valor) or valor is None:
@@ -358,7 +356,7 @@ if not st.session_state.logado:
                             c.execute(sql_novo, (novo_user, novo_nome, novo_email, hash_senha(nova_senha1), agora))
                             conn.commit()
                             st.success("Request sent successfully! Awaiting Administrator approval.")
-                        except sqlite3.IntegrityError:
+                        except Exception:
                             st.error("Username or professional email already registered.")
 
         with aba_recuperar:
@@ -421,8 +419,8 @@ if st.session_state.perfil_atual == "ADMIN":
     if pendencias > 0:
         st.warning(f"Attention Administrator: There are {pendencias} pending request(s) in the Admin Panel tab.")
 
-df_est_total = pd.read_sql_query("SELECT * FROM estoque", conn)
-df_hist_total = pd.read_sql_query("SELECT * FROM historico WHERE tipo_movimento = 'OUT (SERVICE)'", conn)
+df_est_total = ler_banco("SELECT * FROM estoque")
+df_hist_total = ler_banco("SELECT * FROM historico WHERE tipo_movimento = 'OUT (SERVICE)' OR tipo_movimento = 'OUT (VESSEL SERVICE)'")
 
 k1, k2, k3, k4 = st.columns(4)
 k1.metric("Registered Models (Main)", len(df_est_total))
@@ -451,7 +449,7 @@ abas = st.tabs(lista_abas)
 
 with abas[0]:
     st.subheader("Register Part Usage on Vessel (From Main Inventory)")
-    df_disponivel = pd.read_sql_query("SELECT * FROM estoque WHERE quantidade > 0", conn)
+    df_disponivel = ler_banco("SELECT * FROM estoque WHERE quantidade > 0")
     if df_disponivel.empty:
         st.info("No parts available in stock at the moment.")
     else:
@@ -530,7 +528,7 @@ with abas[1]:
             with col_v2:
                 with st.form("form_remover_navio", clear_on_submit=True):
                     st.markdown("#### Remove Vessel")
-                    df_nav_rem = pd.read_sql_query("SELECT nome_navio FROM navios ORDER BY nome_navio", conn)
+                    df_nav_rem = ler_banco("SELECT nome_navio FROM navios ORDER BY nome_navio")
                     lista_nav_rem = df_nav_rem['nome_navio'].tolist() if not df_nav_rem.empty else []
                     
                     v_rem_navio = st.selectbox("Select Vessel to Remove *", lista_nav_rem if lista_nav_rem else ["No vessels registered"])
@@ -555,22 +553,21 @@ with abas[1]:
 
     st.markdown("---")
     
-    df_navios = pd.read_sql_query("SELECT nome_navio FROM navios ORDER BY nome_navio", conn)
+    df_navios = ler_banco("SELECT nome_navio FROM navios ORDER BY nome_navio")
     lista_navios = df_navios['nome_navio'].tolist() if not df_navios.empty else []
     
     if not lista_navios:
         st.info("No vessels registered yet.")
     else:
-        filtro_navio = st.selectbox("🔍 Select a Vessel to view its inventory, add new parts, or register usage:", ["All Vessels"] + lista_navios)
+        filtro_navio = st.selectbox("🔍 Select a Vessel to view its inventory or add new parts:", ["All Vessels"] + lista_navios)
         
         if filtro_navio != "All Vessels":
-            # Painéis operacionais atrelados especificamente ao navio selecionado
             col_v_act1, col_v_act2 = st.columns([1, 1])
             
             with col_v_act1:
                 with st.expander(f"🛠️ Register Part Usage on '{filtro_navio}'", expanded=False):
                     st.markdown(f"**Checkout an item currently stored in {filtro_navio} for a service.**")
-                    df_v_disp = pd.read_sql_query("SELECT * FROM estoque_navios WHERE navio = ? AND quantidade > 0", conn, params=(filtro_navio,))
+                    df_v_disp = ler_banco("SELECT * FROM estoque_navios WHERE navio = ? AND quantidade > 0", (filtro_navio,))
                     if df_v_disp.empty:
                         st.info("No parts available in this vessel's stock.")
                     else:
@@ -641,14 +638,13 @@ with abas[1]:
                                     st.success(f"Part successfully registered directly to {filtro_navio}!")
                                     st.rerun()
 
-        # Mostra a tabela filtrada
         query_v = "SELECT id AS 'ID', navio AS 'Vessel', estoque_origem AS 'Warehouse', spare_part AS 'Spare Part', part_number AS 'Part Number', numero_serie AS 'Serial Number', quantidade AS 'Qty', system AS 'System' FROM estoque_navios"
         params_v = []
         if filtro_navio != "All Vessels":
             query_v += " WHERE navio = ?"
             params_v = [filtro_navio]
             
-        df_v_estoque = pd.read_sql_query(query_v, conn, params=params_v)
+        df_v_estoque = ler_banco(query_v, tuple(params_v))
         st.caption(f"Showing {len(df_v_estoque)} item(s) for {filtro_navio}.")
         
         if st.session_state.perfil_atual == "ADMIN":
@@ -705,7 +701,7 @@ with abas[1]:
 
 with abas[2]:
     st.subheader("Main Inventory Lookup & Edit")
-    df_estoque = pd.read_sql_query("SELECT id AS 'ID', estoque_origem AS 'Warehouse', spare_part AS 'Spare Part', part_number AS 'Part Number', numero_serie AS 'Serial Number', quantidade AS 'Current Qty', system AS 'System' FROM estoque", conn)
+    df_estoque = ler_banco("SELECT id AS 'ID', estoque_origem AS 'Warehouse', spare_part AS 'Spare Part', part_number AS 'Part Number', numero_serie AS 'Serial Number', quantidade AS 'Current Qty', system AS 'System' FROM estoque")
     
     busca = st.text_input("Search (Partial characters allowed, e.g., part name, P/N, S/N, warehouse or system)...", value="", placeholder="Type to filter. Clear the text to show all items again.")
     
@@ -790,7 +786,7 @@ with abas[2]:
             with st.form("form_remover_peca_main", clear_on_submit=True):
                 col_rm1, col_rm2 = st.columns([1, 2])
                 with col_rm1:
-                    df_all_main = pd.read_sql_query("SELECT * FROM estoque", conn)
+                    df_all_main = ler_banco("SELECT * FROM estoque")
                     if df_all_main.empty:
                         st.info("No parts available to remove.")
                         opcoes_rem_main = {}
@@ -874,7 +870,7 @@ with abas[4]:
     if st.session_state.perfil_atual != "ADMIN":
         st.error("🚫 Access Denied: Only Administrators can restock inventory.")
     else:
-        df_todas_pecas = pd.read_sql_query("SELECT * FROM estoque", conn)
+        df_todas_pecas = ler_banco("SELECT * FROM estoque")
         if df_todas_pecas.empty:
             st.info("No parts registered in inventory yet.")
         else:
@@ -916,7 +912,7 @@ with abas[5]:
     with st.form("form_add_tool"):
         st.markdown("#### Assign a New Tool")
         
-        df_sys_tools = pd.read_sql_query("SELECT DISTINCT system FROM ferramentas UNION SELECT DISTINCT system FROM estoque ORDER BY system", conn)
+        df_sys_tools = ler_banco("SELECT DISTINCT system FROM ferramentas UNION SELECT DISTINCT system FROM estoque ORDER BY system")
         lista_sys_tools = [s for s in df_sys_tools['system'].tolist() if s]
         opt_new_sys = "➕ New / Manual Entry"
         
@@ -956,7 +952,7 @@ with abas[5]:
     st.markdown("---")
     st.markdown("#### Tools in Possession")
     
-    df_users_tools = pd.read_sql_query("SELECT username, nome_completo FROM usuarios ORDER BY nome_completo", conn)
+    df_users_tools = ler_banco("SELECT username, nome_completo FROM usuarios ORDER BY nome_completo")
     dict_users = {f"{r['nome_completo']} ({r['username']})": r['username'] for _, r in df_users_tools.iterrows()}
     
     default_idx = 0
@@ -968,7 +964,7 @@ with abas[5]:
     user_selecionado_label = st.selectbox("Select Technician to View Tools:", list(dict_users.keys()), index=default_idx)
     user_selecionado = dict_users[user_selecionado_label]
     
-    df_my_tools = pd.read_sql_query("SELECT id AS 'ID', system AS 'System', ferramenta AS 'Tool Name', part_number AS 'Part Number', identificacao AS 'Identification', quantidade AS 'Qty', observacao AS 'Observation', data_retirada AS 'Date Assigned', status AS 'Status' FROM ferramentas WHERE usuario = ? AND status = 'EM POSSE' ORDER BY system, ferramenta", conn, params=(user_selecionado,))
+    df_my_tools = ler_banco("SELECT id AS 'ID', system AS 'System', ferramenta AS 'Tool Name', part_number AS 'Part Number', identificacao AS 'Identification', quantidade AS 'Qty', observacao AS 'Observation', data_retirada AS 'Date Assigned', status AS 'Status' FROM ferramentas WHERE usuario = ? AND status = 'EM POSSE' ORDER BY system, ferramenta", (user_selecionado,))
     
     if df_my_tools.empty:
         st.info(f"No tools currently assigned to {user_selecionado_label}.")
@@ -1006,7 +1002,7 @@ with abas[5]:
 with abas[6]:
     st.subheader("Service Checkouts (Usage on Vessel)")
     busca_out = st.text_input("Filter checkouts by vessel, SG/WO, technician, part, P/N, warehouse or system...", key="search_out")
-    df_out = pd.read_sql_query("SELECT data_hora AS 'Date/Time', usuario AS 'Technician', estoque_origem AS 'Warehouse', spare_part AS 'Spare Part', part_number AS 'Part Number', numero_serie AS 'Serial Number', quantidade AS 'Qty', system AS 'System', navio AS 'Vessel', work_order AS 'SG / WO' FROM historico WHERE tipo_movimento LIKE 'OUT (SERVICE)%' OR tipo_movimento = 'OUT (VESSEL SERVICE)' ORDER BY id DESC", conn)
+    df_out = ler_banco("SELECT data_hora AS 'Date/Time', usuario AS 'Technician', estoque_origem AS 'Warehouse', spare_part AS 'Spare Part', part_number AS 'Part Number', numero_serie AS 'Serial Number', quantidade AS 'Qty', system AS 'System', navio AS 'Vessel', work_order AS 'SG / WO' FROM historico WHERE tipo_movimento LIKE 'OUT (SERVICE)%' OR tipo_movimento = 'OUT (VESSEL SERVICE)' ORDER BY id DESC")
     if busca_out:
         bo_lower = busca_out.lower()
         f_out = (
@@ -1024,7 +1020,7 @@ with abas[6]:
 with abas[7]:
     st.subheader("Full Usage History")
     busca_hist = st.text_input("Filter full history by vessel, SG/WO, technician, part, P/N, warehouse or system...", key="search_full")
-    df_hist = pd.read_sql_query("SELECT data_hora AS 'Date/Time', usuario AS 'Technician', tipo_movimento AS 'Movement', estoque_origem AS 'Warehouse', spare_part AS 'Spare Part', part_number AS 'Part Number', numero_serie AS 'Serial Number', quantidade AS 'Qty', system AS 'System', navio AS 'Vessel', work_order AS 'SG / WO' FROM historico ORDER BY id DESC", conn)
+    df_hist = ler_banco("SELECT data_hora AS 'Date/Time', usuario AS 'Technician', tipo_movimento AS 'Movement', estoque_origem AS 'Warehouse', spare_part AS 'Spare Part', part_number AS 'Part Number', numero_serie AS 'Serial Number', quantidade AS 'Qty', system AS 'System', navio AS 'Vessel', work_order AS 'SG / WO' FROM historico ORDER BY id DESC")
     if busca_hist:
         bh_lower = busca_hist.lower()
         f_hist = (
@@ -1120,7 +1116,7 @@ if st.session_state.perfil_atual == "ADMIN":
                             
         st.markdown("---")
         st.markdown("### Global Tools Management (All Technicians)")
-        df_all_tools = pd.read_sql_query("SELECT f.id AS 'ID', u.nome_completo AS 'Technician', f.system AS 'System', f.ferramenta AS 'Tool Name', f.part_number AS 'Part Number', f.identificacao AS 'Identification', f.quantidade AS 'Qty', f.observacao AS 'Observation', f.data_retirada AS 'Date Assigned', f.status AS 'Status' FROM ferramentas f JOIN usuarios u ON f.usuario = u.username ORDER BY f.status DESC, f.system, f.data_retirada DESC", conn)
+        df_all_tools = ler_banco("SELECT f.id AS 'ID', u.nome_completo AS 'Technician', f.system AS 'System', f.ferramenta AS 'Tool Name', f.part_number AS 'Part Number', f.identificacao AS 'Identification', f.quantidade AS 'Qty', f.observacao AS 'Observation', f.data_retirada AS 'Date Assigned', f.status AS 'Status' FROM ferramentas f JOIN usuarios u ON f.usuario = u.username ORDER BY f.status DESC, f.system, f.data_retirada DESC")
         if df_all_tools.empty:
             st.info("No tools currently assigned to any technicians.")
         else:
