@@ -125,7 +125,6 @@ def aplicar_estilo_consilium():
 
 aplicar_estilo_consilium()
 
-# Conexão com o banco na nuvem Turso
 @st.cache_resource
 def iniciar_banco():
     try:
@@ -229,7 +228,6 @@ def iniciar_banco():
 
 conn = iniciar_banco()
 
-# Função auxiliar para ler dados do Turso para o Pandas com segurança
 def ler_banco(query, params=()):
     c = conn.cursor()
     c.execute(query, params)
@@ -275,9 +273,9 @@ if "logado" not in st.session_state:
         user_sess = c.fetchone()
         if user_sess:
             st.session_state.logado = True
-            st.session_state.usuario_atual = user_sess[0]
-            st.session_state.nome_atual = user_sess[1]
-            st.session_state.perfil_atual = user_sess[2]
+            st.session_state.usuario_atual = str(user_sess[0])
+            st.session_state.nome_atual = str(user_sess[1])
+            st.session_state.perfil_atual = str(user_sess[2])
 
 if not st.session_state.logado:
     st.markdown("""
@@ -318,14 +316,14 @@ if not st.session_state.logado:
                         st.error("Account deactivated.")
                     else:
                         token = secrets.token_hex(16)
-                        c.execute("UPDATE usuarios SET session_token = ? WHERE username = ?", (token, user_row[0]))
+                        c.execute("UPDATE usuarios SET session_token = ? WHERE username = ?", (token, str(user_row[0])))
                         conn.commit()
                         st.query_params["session"] = token
                         
                         st.session_state.logado = True
-                        st.session_state.usuario_atual = user_row[0]
-                        st.session_state.nome_atual = user_row[1]
-                        st.session_state.perfil_atual = user_row[3]
+                        st.session_state.usuario_atual = str(user_row[0])
+                        st.session_state.nome_atual = str(user_row[1])
+                        st.session_state.perfil_atual = str(user_row[3])
                         st.rerun()
 
         with aba_criar:
@@ -372,13 +370,13 @@ if not st.session_state.logado:
                         st.error("Email not found.")
                     else:
                         senha_temp = secrets.token_hex(3).upper()
-                        enviado, _ = enviar_email_recuperacao(email_rec, u_rec[1], senha_temp)
+                        enviado, _ = enviar_email_recuperacao(email_rec, str(u_rec[1]), senha_temp)
                         if enviado:
-                            c.execute("UPDATE usuarios SET senha_hash = ?, pedido_reset = 0 WHERE id = ?", (hash_senha(senha_temp), u_rec[0]))
+                            c.execute("UPDATE usuarios SET senha_hash = ?, pedido_reset = 0 WHERE id = ?", (hash_senha(senha_temp), int(u_rec[0])))
                             conn.commit()
                             st.success("Temporary password sent to your email.")
                         else:
-                            c.execute("UPDATE usuarios SET pedido_reset = 1 WHERE id = ?", (u_rec[0],))
+                            c.execute("UPDATE usuarios SET pedido_reset = 1 WHERE id = ?", (int(u_rec[0]),))
                             conn.commit()
                             st.info("Request sent directly to the Administrator panel.")
     st.stop()
@@ -404,7 +402,7 @@ with col_h2:
         st.image("logo.png", width=110)
     if st.button("Sign Out", use_container_width=True):
         c = conn.cursor()
-        c.execute("UPDATE usuarios SET session_token = NULL WHERE username = ?", (st.session_state.usuario_atual,))
+        c.execute("UPDATE usuarios SET session_token = NULL WHERE username = ?", (str(st.session_state.usuario_atual),))
         conn.commit()
         if "session" in st.query_params:
             del st.query_params["session"]
@@ -542,11 +540,11 @@ with abas[1]:
                             st.error("A reason is required to remove a vessel.")
                         else:
                             c = conn.cursor()
-                            c.execute("DELETE FROM navios WHERE nome_navio = ?", (v_rem_navio,))
-                            c.execute("DELETE FROM estoque_navios WHERE navio = ?", (v_rem_navio,))
+                            c.execute("DELETE FROM navios WHERE nome_navio = ?", (str(v_rem_navio),))
+                            c.execute("DELETE FROM estoque_navios WHERE navio = ?", (str(v_rem_navio),))
                             agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
                             c.execute("INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                      (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "DELETE (VESSEL)", "ALL ASSOCIATED PARTS REMOVED", "", "", 0, "N/A", "N/A", v_rem_navio, f"REMOVED: {v_rem_motivo.strip()}"))
+                                      (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "DELETE (VESSEL)", "ALL ASSOCIATED PARTS REMOVED", "", "", 0, "N/A", "N/A", str(v_rem_navio), f"REMOVED: {v_rem_motivo.strip()}"))
                             conn.commit()
                             st.success(f"Vessel '{v_rem_navio}' and all its specific inventory were successfully removed!")
                             st.rerun()
@@ -567,7 +565,7 @@ with abas[1]:
             with col_v_act1:
                 with st.expander(f"🛠️ Register Part Usage on '{filtro_navio}'", expanded=False):
                     st.markdown(f"**Checkout an item currently stored in {filtro_navio} for a service.**")
-                    df_v_disp = ler_banco("SELECT * FROM estoque_navios WHERE navio = ? AND quantidade > 0", (filtro_navio,))
+                    df_v_disp = ler_banco("SELECT * FROM estoque_navios WHERE navio = ? AND quantidade > 0", (str(filtro_navio),))
                     if df_v_disp.empty:
                         st.info("No parts available in this vessel's stock.")
                     else:
@@ -600,7 +598,7 @@ with abas[1]:
                                     c.execute("UPDATE estoque_navios SET quantidade = ? WHERE id = ?", (nova_qtd_u, int(id_uso)))
                                     agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
                                     c.execute("INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                              (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "OUT (VESSEL SERVICE)", row_uso['spare_part'], row_uso.get('part_number', ''), row_uso.get('numero_serie', ''), int(v_qtd_uso), row_uso.get('estoque_origem', ''), row_uso.get('system', ''), filtro_navio, v_wo_uso.strip()))
+                                              (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "OUT (VESSEL SERVICE)", row_uso['spare_part'], row_uso.get('part_number', ''), row_uso.get('numero_serie', ''), int(v_qtd_uso), row_uso.get('estoque_origem', ''), row_uso.get('system', ''), str(filtro_navio), v_wo_uso.strip()))
                                     conn.commit()
                                     st.success(f"Usage registered for {filtro_navio}!")
                                     st.rerun()
@@ -629,11 +627,11 @@ with abas[1]:
                                     val_sn = v_sn.strip() if v_sn else ""
                                     
                                     c.execute("INSERT INTO estoque_navios (navio, spare_part, part_number, numero_serie, quantidade, estoque_origem, system) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                                              (filtro_navio, v_spare.strip(), val_pn, val_sn, int(v_qtd), v_wh, v_sys.strip()))
+                                              (str(filtro_navio), v_spare.strip(), val_pn, val_sn, int(v_qtd), v_wh, v_sys.strip()))
                                     
                                     agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
                                     c.execute("INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                              (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "IN (VESSEL STOCK)", v_spare.strip(), val_pn, val_sn, int(v_qtd), v_wh, v_sys.strip(), filtro_navio, "REGISTER"))
+                                              (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "IN (VESSEL STOCK)", v_spare.strip(), val_pn, val_sn, int(v_qtd), v_wh, v_sys.strip(), str(filtro_navio), "REGISTER"))
                                     conn.commit()
                                     st.success(f"Part successfully registered directly to {filtro_navio}!")
                                     st.rerun()
@@ -642,7 +640,7 @@ with abas[1]:
         params_v = []
         if filtro_navio != "All Vessels":
             query_v += " WHERE navio = ?"
-            params_v = [filtro_navio]
+            params_v.append(str(filtro_navio))
             
         df_v_estoque = ler_banco(query_v, tuple(params_v))
         st.caption(f"Showing {len(df_v_estoque)} item(s) for {filtro_navio}.")
@@ -692,7 +690,7 @@ with abas[1]:
                                 
                                 obs_mov = f"EDIT (VESSEL): {motivo_v_edit.strip()}"
                                 c.execute("INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                          (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "EDIT (VESSEL STOCK)", val_sp, val_pn, val_sn, val_qtd, val_wh, val_sys, edit['Vessel'], obs_mov))
+                                          (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "EDIT (VESSEL STOCK)", val_sp, val_pn, val_sn, val_qtd, val_wh, val_sys, str(edit['Vessel']), obs_mov))
                             conn.commit()
                             st.success("Vessel inventory updated successfully!")
                             st.rerun()
@@ -823,7 +821,7 @@ with abas[2]:
                             
                             obs_mov = f"REMOVED: {p_rem_motivo.strip()}"
                             c.execute("INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                      (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "DELETE (MAIN STOCK)", v_sp, v_pn, v_sn, v_qtd, v_wh, v_sys, "MAIN INVENTORY", obs_mov))
+                                      (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "DELETE (MAIN STOCK)", str(v_sp), str(v_pn), str(v_sn), int(v_qtd), str(v_wh), str(v_sys), "MAIN INVENTORY", obs_mov))
                             conn.commit()
                             st.success(f"Part '{v_sp}' was successfully removed!")
                             st.rerun()
@@ -857,10 +855,10 @@ with abas[3]:
                     val_sn = novo_sn.strip() if novo_sn else ""
                     
                     c.execute("INSERT INTO estoque (spare_part, part_number, numero_serie, quantidade, estoque_origem, system, localizacao) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                              (novo_spare.strip(), val_pn, val_sn, int(nova_qtd), estoque_escolhido, novo_system.strip(), novo_system.strip()))
+                              (novo_spare.strip(), val_pn, val_sn, int(nova_qtd), str(estoque_escolhido), novo_system.strip(), novo_system.strip()))
                     agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
                     sql_hist_in = "INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                    c.execute(sql_hist_in, (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "IN (REGISTRATION)", novo_spare.strip(), val_pn, val_sn, int(nova_qtd), estoque_escolhido, novo_system.strip(), "-", "-"))
+                    c.execute(sql_hist_in, (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "IN (REGISTRATION)", novo_spare.strip(), val_pn, val_sn, int(nova_qtd), str(estoque_escolhido), novo_system.strip(), "-", "-"))
                     conn.commit()
                     st.success(f"Part registered successfully in warehouse '{estoque_escolhido}'!")
                     st.rerun()
@@ -901,7 +899,7 @@ with abas[4]:
                     obs_mov = motivo_reposicao.strip() if motivo_reposicao.strip() else "Restock / Stock Addition"
                     
                     sql_hist_restock = "INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                    c.execute(sql_hist_restock, (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "IN (RESTOCK)", dados_rep['spare_part'], dados_rep.get('part_number', ''), dados_rep.get('numero_serie', ''), int(qtd_adicional), dados_rep.get('estoque_origem', ''), dados_rep.get('system', ''), "-", obs_mov))
+                    c.execute(sql_hist_restock, (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "IN (RESTOCK)", str(dados_rep['spare_part']), str(dados_rep.get('part_number', '')), str(dados_rep.get('numero_serie', '')), int(qtd_adicional), str(dados_rep.get('estoque_origem', '')), str(dados_rep.get('system', '')), "-", obs_mov))
                     conn.commit()
                     st.success(f"Successfully added {qtd_adicional} unit(s) to '{dados_rep['spare_part']}'. New total: {nova_qtd_total}")
                     st.rerun()
@@ -944,7 +942,7 @@ with abas[5]:
                 c = conn.cursor()
                 agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
                 c.execute("INSERT INTO ferramentas (ferramenta, part_number, identificacao, usuario, data_retirada, status, system, quantidade, observacao) VALUES (?, ?, ?, ?, ?, 'EM POSSE', ?, ?, ?)",
-                          (t_nome.strip(), t_pn.strip() if t_pn else "", t_id.strip() if t_id else "", st.session_state.usuario_atual, agora, t_sys.strip(), int(t_qtd), t_obs.strip()))
+                          (t_nome.strip(), t_pn.strip() if t_pn else "", t_id.strip() if t_id else "", str(st.session_state.usuario_atual), agora, t_sys.strip(), int(t_qtd), t_obs.strip()))
                 conn.commit()
                 st.success("Tool added to your cautela!")
                 st.rerun()
@@ -964,7 +962,7 @@ with abas[5]:
     user_selecionado_label = st.selectbox("Select Technician to View Tools:", list(dict_users.keys()), index=default_idx)
     user_selecionado = dict_users[user_selecionado_label]
     
-    df_my_tools = ler_banco("SELECT id AS 'ID', system AS 'System', ferramenta AS 'Tool Name', part_number AS 'Part Number', identificacao AS 'Identification', quantidade AS 'Qty', observacao AS 'Observation', data_retirada AS 'Date Assigned', status AS 'Status' FROM ferramentas WHERE usuario = ? AND status = 'EM POSSE' ORDER BY system, ferramenta", (user_selecionado,))
+    df_my_tools = ler_banco("SELECT id AS 'ID', system AS 'System', ferramenta AS 'Tool Name', part_number AS 'Part Number', identificacao AS 'Identification', quantidade AS 'Qty', observacao AS 'Observation', data_retirada AS 'Date Assigned', status AS 'Status' FROM ferramentas WHERE usuario = ? AND status = 'EM POSSE' ORDER BY system, ferramenta", (str(user_selecionado),))
     
     if df_my_tools.empty:
         st.info(f"No tools currently assigned to {user_selecionado_label}.")
@@ -992,7 +990,7 @@ with abas[5]:
                 if st.button("Confirm Tool Returns", use_container_width=True):
                     c = conn.cursor()
                     for edit in mudancas_ferramentas:
-                        c.execute("UPDATE ferramentas SET status = ? WHERE id = ?", (edit['Status'], int(edit['ID'])))
+                        c.execute("UPDATE ferramentas SET status = ? WHERE id = ?", (str(edit['Status']), int(edit['ID'])))
                     conn.commit()
                     st.success("Tools status updated successfully!")
                     st.rerun()
@@ -1038,7 +1036,7 @@ with abas[7]:
 with abas[8]:
     st.subheader("Account Settings")
     c = conn.cursor()
-    c.execute("SELECT nome_completo, email FROM usuarios WHERE username = ?", (st.session_state.usuario_atual,))
+    c.execute("SELECT nome_completo, email FROM usuarios WHERE username = ?", (str(st.session_state.usuario_atual),))
     dados_meu_user = c.fetchone()
     col_p1, col_p2 = st.columns(2)
     with col_p1:
@@ -1052,7 +1050,7 @@ with abas[8]:
                     st.error("Please provide a valid professional corporate email.")
                 else:
                     c.execute("UPDATE usuarios SET nome_completo = ?, email = ? WHERE username = ?",
-                              (novo_nome_perfil.strip(), novo_email_perfil.strip().lower(), st.session_state.usuario_atual))
+                              (novo_nome_perfil.strip(), novo_email_perfil.strip().lower(), str(st.session_state.usuario_atual)))
                     conn.commit()
                     st.session_state.nome_atual = novo_nome_perfil.strip()
                     st.success("Data updated successfully!")
@@ -1064,7 +1062,7 @@ with abas[8]:
             senha_nova_1 = st.text_input("New Password *", type="password")
             senha_nova_2 = st.text_input("Confirm New Password *", type="password")
             if st.form_submit_button("Confirm New Password", use_container_width=True):
-                c.execute("SELECT senha_hash FROM usuarios WHERE username = ?", (st.session_state.usuario_atual,))
+                c.execute("SELECT senha_hash FROM usuarios WHERE username = ?", (str(st.session_state.usuario_atual),))
                 hash_atual_bd = c.fetchone()[0]
                 if hash_senha(senha_atual_input) != hash_atual_bd:
                     st.error("Incorrect current password.")
@@ -1074,7 +1072,7 @@ with abas[8]:
                     st.error("New passwords do not match.")
                 else:
                     c.execute("UPDATE usuarios SET senha_hash = ?, pedido_reset = 0 WHERE username = ?",
-                              (hash_senha(senha_nova_1), st.session_state.usuario_atual))
+                              (hash_senha(senha_nova_1), str(st.session_state.usuario_atual)))
                     conn.commit()
                     st.success("Password changed successfully!")
 
