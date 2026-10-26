@@ -857,8 +857,8 @@ with abas[3]:
                     c.execute("INSERT INTO estoque (spare_part, part_number, numero_serie, quantidade, estoque_origem, system, localizacao) VALUES (?, ?, ?, ?, ?, ?, ?)",
                               (novo_spare.strip(), val_pn, val_sn, int(nova_qtd), str(estoque_escolhido), novo_system.strip(), novo_system.strip()))
                     agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-                    sql_hist_in = "INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                    c.execute(sql_hist_in, (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "IN (REGISTRATION)", novo_spare.strip(), val_pn, val_sn, int(nova_qtd), str(estoque_escolhido), novo_system.strip(), "-", "-"))
+                    sql_hist_in = "INSERT INTO historico (data_hora, usuario, tipo_movimento, spare_part, part_number, numero_serie, quantidade, estoque_origem, system, navio, work_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (agora, f"{st.session_state.nome_atual} ({st.session_state.usuario_atual})", "IN (REGISTRATION)", novo_spare.strip(), val_pn, val_sn, int(nova_qtd), str(estoque_escolhido), novo_system.strip(), "-", "-")
+                    c.execute(*sql_hist_in)
                     conn.commit()
                     st.success(f"Part registered successfully in warehouse '{estoque_escolhido}'!")
                     st.rerun()
