@@ -125,7 +125,6 @@ def aplicar_estilo_consilium():
 
 aplicar_estilo_consilium()
 
-@st.cache_resource
 def iniciar_banco():
     try:
         url = st.secrets["TURSO_DATABASE_URL"]
