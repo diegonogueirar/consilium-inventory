@@ -304,8 +304,7 @@ if not st.session_state.logado:
                 
                 if entrar:
                     c = conn.cursor()
-                    c.execute("SELECT username, nome_completo, senha_hash, perfil, status FROM usuarios WHERE LOWER(username) = ? OR LOWER(email) = ?", (str(usuario_input), str(usuario_input)))
-                    user_row = c.fetchone()
+                    c.execute("SELECT username, nome_completo, senha_hash, perfil, status FROM usuarios WHERE LOWER(username) = ? OR LOWER(email) = ?", (str(usuario_input), str(usuario_input)))                    user_row = c.fetchone()
                     if not user_row:
                         st.error("User or email not found.")
                     elif user_row[2] != hash_senha(senha_input):
